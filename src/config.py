@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     fast_model: str = Field(default="claude-haiku-4-5-20251001", alias="FAST_MODEL")
 
     # Database
-    database_url: str = Field(default="postgresql://postgres@localhost:5432/noon_agent", alias="DATABASE_URL")
+    database_url: str = Field(default="postgresql://clinton@localhost:5432/noon_agent", alias="DATABASE_URL")
 
     # Redis
     redis_url: str = Field(default="redis://localhost:6379", alias="REDIS_URL")

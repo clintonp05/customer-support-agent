@@ -4,7 +4,7 @@ from psycopg2.extras import execute_values
 
 
 def get_db_connection():
-    database_url = os.getenv("DATABASE_URL", "postgresql://noon:noon_local@localhost:5432/noon_agent")
+    database_url = os.getenv("DATABASE_URL", "postgresql://clinton@localhost:5432/noon_agent")
     return psycopg2.connect(database_url)
 
 

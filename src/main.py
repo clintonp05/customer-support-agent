@@ -51,7 +51,7 @@ async def startup():
     logger = get_logger()
     logger.info("startup", msg="Noon Prep API starting up")
     try:
-        init_db_pool(minconn=1, maxconn=10)
+        init_db_pool(minconn=1, maxconn=10, retries=5, delay_s=1.0)
     except Exception as exc:
         logger.exception("startup.db_init_failed", exc=str(exc))
         logger.warning("startup.db_unavailable", msg="Proceeding without DB connection. Some features may fail.")
