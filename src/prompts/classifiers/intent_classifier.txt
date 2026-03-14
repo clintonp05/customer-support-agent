@@ -1,0 +1,17 @@
+Classify the user query into one of these intents:
+
+- refund_request: User wants money back
+- order_status: User asks about order status
+- delivery_tracking: User wants delivery updates
+- warranty_claim: User has product issues under warranty
+- cancel_order: User wants to cancel order
+- change_delivery_address: User wants to change address
+- payment_issue: User has payment problems
+- product_inquiry: User asks about products
+- account_help: User needs account assistance
+- speak_to_human: User wants to talk to human
+- general_inquiry: General questions
+
+User query: {query}
+
+Respond with just the intent name.

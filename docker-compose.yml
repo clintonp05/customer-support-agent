@@ -1,0 +1,66 @@
+services:
+
+  # The agent API
+  agent:
+    build: .
+    ports: ["8000:8000"]
+    env_file: .env
+    depends_on: [postgres, redis, qdrant, langfuse]
+
+  # Postgres — LangGraph checkpointer + episode store + Langfuse
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: noon_agent
+      POSTGRES_USER: noon
+      POSTGRES_PASSWORD: noon_local
+    ports: ["5432:5432"]
+    volumes: [postgres_data:/var/lib/postgresql/data]
+
+  # Redis — intent vector index + session cache + prompt cache
+  redis:
+    image: redis/redis-stack:latest   # includes RedisSearch for vectors
+    ports: ["6379:6379", "8001:8001"] # 8001 = RedisInsight UI
+    volumes: [redis_data:/data]
+
+  # Qdrant — RAG knowledge base (FAQ, policies, support history)
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports: ["6333:6333", "6334:6334"]
+    volumes: [qdrant_data:/qdrant/storage]
+
+  # Langfuse — observability + prompt hub (self-hosted)
+  langfuse:
+    image: langfuse/langfuse:latest
+    ports: ["3000:3000"]
+    environment:
+      DATABASE_URL: postgresql://noon:noon_local@postgres:5432/langfuse
+      NEXTAUTH_SECRET: local_secret_change_in_prod
+      NEXTAUTH_URL: http://localhost:3000
+      SALT: local_salt
+    depends_on: [postgres]
+
+  # Prometheus — metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    ports: ["9090:9090"]
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+
+  # Grafana — metrics dashboard
+  grafana:
+    image: grafana/grafana:latest
+    ports: ["3001:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./infra/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./infra/grafana/datasources:/etc/grafana/provisioning/datasources
+      - grafana_data:/var/lib/grafana
+    depends_on: [prometheus]
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:
+  grafana_data:

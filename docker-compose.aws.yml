@@ -1,0 +1,61 @@
+services:
+  agent:
+    environment:
+      - DATABASE_URL=${AWS_DATABASE_URL}
+      - REDIS_URL=${AWS_REDIS_URL}
+      - QDRANT_URL=${AWS_QDRANT_URL}
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+
+  postgres:
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+
+  redis:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+
+  qdrant:
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+
+  langfuse:
+    environment:
+      - DATABASE_URL=${AWS_DATABASE_URL}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+
+  prometheus:
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+
+  grafana:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M

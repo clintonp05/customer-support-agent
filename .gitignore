@@ -1,0 +1,39 @@
+# Environment — NEVER commit this
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Models — too large for git
+*.bin
+*.safetensors
+models/
+
+# Qdrant local storage
+qdrant_storage/
+
+# Mac
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+EOF
