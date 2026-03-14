@@ -6,6 +6,7 @@ from src.api.routes import router as api_router
 from src.constants import X_REQUEST_ID_HEADER, X_CHANNEL_ID_HEADER, MISSING_HEADERS_ERROR
 from src.observability.logger import setup_logging, bind_request_context, get_logger
 from src.db.connector import init_db_pool, close_db_pool
+from src.rag.retriever import get_retriever
 
 
 def create_app() -> FastAPI:
@@ -55,6 +56,13 @@ async def startup():
     except Exception as exc:
         logger.exception("startup.db_init_failed", exc=str(exc))
         logger.warning("startup.db_unavailable", msg="Proceeding without DB connection. Some features may fail.")
+
+    # Initialize RAG retriever and embedder once at startup to avoid repeated model downloads
+    try:
+        get_retriever()
+        logger.info("startup.rag_initialized", msg="RAG retriever and embedder initialized")
+    except Exception as exc:
+        logger.exception("startup.rag_init_failed", exc=str(exc))
 
 
 async def shutdown():

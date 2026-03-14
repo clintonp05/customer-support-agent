@@ -1,7 +1,9 @@
 """PII detection and masking guard using Presidio"""
 import re
-from typing import Tuple
+from typing import Tuple, List
+from src.observability.logger import get_logger
 
+logger = get_logger()
 
 # PII patterns
 PII_PATTERNS = {
@@ -30,27 +32,39 @@ def detect_pii(text: str) -> list:
     return detected
 
 
-def mask_pii(text: str) -> str:
+def mask_pii(text: str) -> Tuple[str, List[str]]:
     """Mask PII in text
 
     Returns:
-        Text with PII masked
+        Tuple of (Text with PII masked, list of detected PII types)
     """
     masked = text
+    detected_types = []
 
     # Mask email
-    masked = re.sub(PII_PATTERNS["EMAIL"], "[EMAIL]", masked)
+    if re.search(PII_PATTERNS["EMAIL"], masked, re.IGNORECASE):
+        masked = re.sub(PII_PATTERNS["EMAIL"], "[EMAIL]", masked)
+        detected_types.append("EMAIL")
 
     # Mask phone
-    masked = re.sub(PII_PATTERNS["PHONE"], "[PHONE]", masked)
+    if re.search(PII_PATTERNS["PHONE"], masked, re.IGNORECASE):
+        masked = re.sub(PII_PATTERNS["PHONE"], "[PHONE]", masked)
+        detected_types.append("PHONE")
 
     # Mask credit card
-    masked = re.sub(PII_PATTERNS["CREDIT_CARD"], "[CREDIT_CARD]", masked)
+    if re.search(PII_PATTERNS["CREDIT_CARD"], masked, re.IGNORECASE):
+        masked = re.sub(PII_PATTERNS["CREDIT_CARD"], "[CREDIT_CARD]", masked)
+        detected_types.append("CREDIT_CARD")
 
     # Mask SSN
-    masked = re.sub(PII_PATTERNS["SSN"], "[SSN]", masked)
+    if re.search(PII_PATTERNS["SSN"], masked, re.IGNORECASE):
+        masked = re.sub(PII_PATTERNS["SSN"], "[SSN]", masked)
+        detected_types.append("SSN")
 
-    return masked
+    if detected_types:
+        logger.info("pii.masked", pii_types=detected_types)
+
+    return masked, detected_types
 
 
 def get_pii_entities(text: str) -> dict:

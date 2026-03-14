@@ -3,8 +3,8 @@ from langgraph.graph import StateGraph, END
 from typing import Dict, Any, Optional
 
 from src.agent.state import ConversationState
-from src.agent.nodes import guard_input_node, classify_intent_node, extract_params_node, validate_params_node, request_params_node, handle_param_error_node, execute_tools_node, generate_response_node, handle_unsupported_node, escalate_node
-from src.agent.edges import route_after_guard, route_after_classify, route_after_extract_params, route_after_validate, route_after_execute
+from src.agent.nodes import guard_input_node, query_analyser_node, intent_analyser_node, complexity_analyser_node, query_analyse_join_node, classify_intent_node, extract_params_node, validate_params_node, request_params_node, handle_param_error_node, execute_tools_node, generate_response_node, handle_unsupported_node, escalate_node, persist_response_node
+from src.agent.edges import route_after_guard, route_after_query_analyse, route_after_classify, route_after_extract_params, route_after_validate, route_after_execute, route_to_node
 from src.observability.logger import get_logger
 
 
@@ -14,6 +14,10 @@ def create_agent_graph() -> StateGraph:
     workflow = StateGraph(ConversationState)
 
     workflow.add_node("guard_input", guard_input_node)
+    workflow.add_node("query_analyser", query_analyser_node)
+    workflow.add_node("intent_analyser", intent_analyser_node)
+    workflow.add_node("complexity_analyser", complexity_analyser_node)
+    workflow.add_node("query_analyse_join", query_analyse_join_node)
     workflow.add_node("classify_intent", classify_intent_node)
     workflow.add_node("extract_params", extract_params_node)
     workflow.add_node("validate_params", validate_params_node)
@@ -21,6 +25,7 @@ def create_agent_graph() -> StateGraph:
     workflow.add_node("handle_param_error", handle_param_error_node)
     workflow.add_node("execute_tools", execute_tools_node)
     workflow.add_node("generate_response", generate_response_node)
+    workflow.add_node("persist_response", persist_response_node)
     workflow.add_node("handle_unsupported", handle_unsupported_node)
     workflow.add_node("escalate", escalate_node)
 
@@ -29,7 +34,16 @@ def create_agent_graph() -> StateGraph:
     workflow.add_conditional_edges(
         "guard_input",
         route_after_guard,
-        ["escalate", "classify_intent"]
+        ["escalate", "query_analyser", "classify_intent"]
+    )
+    workflow.add_edge("query_analyser", "intent_analyser")
+    workflow.add_edge("query_analyser", "complexity_analyser")
+    workflow.add_edge("intent_analyser", "query_analyse_join")
+    workflow.add_edge("complexity_analyser", "query_analyse_join")
+    workflow.add_conditional_edges(
+        "query_analyse_join",
+        route_after_query_analyse,
+        ["extract_params", "handle_unsupported", "escalate"]
     )
     workflow.add_conditional_edges(
         "classify_intent",
@@ -47,12 +61,17 @@ def create_agent_graph() -> StateGraph:
         ["request_params", "handle_param_error", "execute_tools"]
     )
 
-    workflow.add_edge("request_params", END)
+    workflow.add_edge("request_params", "persist_response")
     workflow.add_edge("handle_param_error", "escalate")
     workflow.add_edge("execute_tools", "generate_response")
-    workflow.add_edge("handle_unsupported", "escalate")
-    workflow.add_edge("generate_response", END)
+    workflow.add_conditional_edges(
+        "handle_unsupported",
+        route_to_node,
+        ["escalate", "persist_response"]
+    )
+    workflow.add_edge("generate_response", "persist_response")
     workflow.add_edge("escalate", "generate_response")
+    workflow.add_edge("persist_response", END)
 
     return workflow.compile()
 
@@ -96,6 +115,7 @@ async def process_conversation(
         "primary_intent": "",
         "intent_confidence": 0.0,
         "intent_support_status": "SUPPORTED",
+        "query_analysis": {},
         "extracted_params": {
             "user_id": user_id,
             **({"order_id": order_id} if order_id else {}),

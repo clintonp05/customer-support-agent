@@ -1,6 +1,8 @@
 """Toxicity detection guard"""
 from typing import Tuple
+from src.observability.logger import get_logger
 
+logger = get_logger()
 
 # Mock toxicity detection - in production, use Llama Guard or HF toxicity model
 TOXIC_KEYWORDS = [
@@ -19,6 +21,8 @@ def check_toxicity(text: str) -> Tuple[bool, float]:
 
     for keyword in TOXIC_KEYWORDS:
         if keyword in text_lower:
+            logger.warning("toxicity.detected", keyword=keyword, confidence=0.95)
             return True, 0.95
 
+    logger.info("toxicity.check_passed", text_length=len(text))
     return False, 0.0

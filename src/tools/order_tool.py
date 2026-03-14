@@ -1,6 +1,9 @@
 from src.tools.base import BaseTool
 from src.db.queries import get_order_by_id
+from src.observability.logger import get_logger
 from typing import Dict, Any
+
+logger = get_logger()
 
 
 class OrderTool(BaseTool):
@@ -13,7 +16,10 @@ class OrderTool(BaseTool):
         order_id = params.get("order_id")
         user_id = params.get("user_id")
 
+        logger.info("order_tool.lookup.start", order_id=order_id, user_id=user_id)
+
         if not order_id:
+            logger.warning("order_tool.lookup.missing_id")
             return {
                 "success": False,
                 "error": "MISSING_ORDER_ID",
@@ -22,12 +28,14 @@ class OrderTool(BaseTool):
 
         order = get_order_by_id(order_id=order_id, user_id=user_id)
         if not order:
+            logger.info("order_tool.lookup.not_found", order_id=order_id)
             return {
                 "success": False,
                 "error": "ORDER_NOT_FOUND",
                 "message": f"Order {order_id} not found"
             }
 
+        logger.info("order_tool.lookup.success", order_id=order_id, status=order.get("status"), item_count=len(order.get("items", [])))
         return {"success": True, "order": order}
 
     def _validate_result(self, result: dict) -> dict:

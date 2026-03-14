@@ -18,11 +18,17 @@ class Settings(BaseSettings):
 
     # Redis
     redis_url: str = Field(default="redis://localhost:6379", alias="REDIS_URL")
+    redis_query_ttl_s: int = Field(default=86400, alias="REDIS_QUERY_TTL_S")
 
     # Qdrant
     qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
     qdrant_collection_faq: str = Field(default="noon_faq", alias="QDRANT_COLLECTION_FAQ")
     qdrant_collection_policies: str = Field(default="noon_policies", alias="QDRANT_COLLECTION_POLICIES")
+
+    # LLM / Ollama
+    llm_speed_model: str = Field(default="llama3.2:1b", alias="LLM_SPEED_MODEL")
+    llm_balanced_model: str = Field(default="llama3.2:1b", alias="LLM_BALANCED_MODEL")
+    llm_accuracy_model: str = Field(default="llama3.2:1b", alias="LLM_ACCURACY_MODEL")
 
     # Langfuse
     langfuse_public_key: str = Field(default="", alias="LANGFUSE_PUBLIC_KEY")

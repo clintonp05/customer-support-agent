@@ -6,15 +6,16 @@ import numpy as np
 class Embedder:
     """Sentence transformer embedder for RAG"""
 
-    def __init__(self, model_name: str = "paraphrase-multilingual-MiniLM-L12-v2"):
+    def __init__(self, model_name: str = "paraphrase-multilingual-MiniLM-L12-v2", device: str = "mps"):
         self.model_name = model_name
+        self.device = device
         self.model = None
         self._load_model()
 
     def _load_model(self):
         try:
             from sentence_transformers import SentenceTransformer
-            self.model = SentenceTransformer(self.model_name)
+            self.model = SentenceTransformer(self.model_name, device=self.device)
         except Exception:
             self.model = None
 

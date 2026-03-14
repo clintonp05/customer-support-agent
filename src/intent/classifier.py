@@ -4,6 +4,9 @@ from typing import Tuple, Optional
 
 from src.intent.registry import INTENT_REGISTRY
 from src.guard.entity_extractor import extract_order_ids, extract_user_ids
+from src.observability.logger import get_logger
+
+logger = get_logger()
 
 
 class IntentClassifier:
@@ -24,6 +27,7 @@ class IntentClassifier:
         # Rule-based matching against utterance examples
         best_match = None
         best_score = 0.0
+        matched_utterance = None
 
         for intent_name, intent_config in self.intent_registry.items():
             for utterance in intent_config.get("utterances", []):
@@ -32,12 +36,15 @@ class IntentClassifier:
                 if score > best_score:
                     best_score = score
                     best_match = intent_name
+                    matched_utterance = utterance
 
         # Threshold check
         if best_score >= 0.3:
+            logger.info("intent.classified", intent=best_match, confidence=min(best_score, 1.0), matched_utterance=matched_utterance[:50] if matched_utterance else None)
             return best_match, min(best_score, 1.0)
 
         # Default to general_inquiry for unrecognized
+        logger.info("intent.fallback", confidence=0.5, best_attempt_score=best_score)
         return "general_inquiry", 0.5
 
     def _calculate_similarity(self, query: str, utterance: str) -> float:

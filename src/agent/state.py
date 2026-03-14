@@ -18,6 +18,7 @@ class ConversationState(TypedDict):
     primary_intent: str
     intent_confidence: float
     intent_support_status: str  # SUPPORTED / IN_DOMAIN_OUT_OF_SCOPE / UNSUPPORTED
+    query_analysis: Dict[str, Any]
 
     # Params
     extracted_params: Dict[str, Any]

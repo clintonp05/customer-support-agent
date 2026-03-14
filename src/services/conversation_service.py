@@ -57,6 +57,7 @@ class ConversationService:
             "primary_intent": "",
             "intent_confidence": 0.0,
             "intent_support_status": "SUPPORTED",
+            "query_analysis": {},
             "extracted_params": initial_extracted,
             "param_validation_status": "COMPLETE",
             "missing_params": [],

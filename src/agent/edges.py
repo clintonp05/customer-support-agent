@@ -8,7 +8,12 @@ def route_after_guard(state: ConversationState) -> str:
     """Route after input guard"""
     if state.get("escalation_required"):
         return "escalate"
-    return state.get("next_node", "classify_intent")
+    return state.get("next_node", "query_analyser")
+
+
+def route_after_query_analyse(state: ConversationState) -> str:
+    """Route after query analysis"""
+    return state.get("next_node", "extract_params")
 
 
 def route_after_classify(state: ConversationState) -> str:
@@ -46,8 +51,10 @@ def route_to_node(state: ConversationState) -> str:
 # Edge mapping
 EDGES = {
     "guard_input": route_after_guard,
+    "query_analyse_join": route_after_query_analyse,
     "classify_intent": route_after_classify,
     "extract_params": route_after_extract_params,
     "validate_params": route_after_validate,
     "execute_tools": route_after_execute,
+    "handle_unsupported": route_to_node,
 }
