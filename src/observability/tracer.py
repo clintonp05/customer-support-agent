@@ -2,6 +2,7 @@
 import time
 from typing import Optional, Dict, Any
 from contextlib import asynccontextmanager
+from src.observability.logger import get_logger
 from src.config import settings
 
 
@@ -10,6 +11,7 @@ class LangfuseTracer:
 
     def __init__(self):
         self.client = None
+        logger = get_logger()
         if settings.langfuse_public_key and settings.langfuse_secret_key:
             try:
                 from langfuse import Langfuse
@@ -19,26 +21,47 @@ class LangfuseTracer:
                     host=settings.langfuse_host,
                 )
             except ImportError:
+                
+                logger.warning("langfuse_sdk_not_available", error="Langfuse SDK not installed")
                 self.client = None
+
 
     @asynccontextmanager
     async def trace(self, name: str, metadata: Optional[Dict[str, Any]] = None):
         """Async context manager for tracing."""
-        if self.client:
-            with self.client.trace(name=name, metadata=metadata or {}) as trace:
-                yield trace
+        class MockTrace:
+            def span(self, name: str, **kwargs):
+                return self
+
+            def log(self, **kwargs):
+                return None
+
+            def set_status(self, status: str):
+                return None
+
+        trace_obj = None
+        if self.client and hasattr(self.client, "start_as_current_observation"):
+            try:
+                trace_obj = self.client.start_as_current_observation(
+                    name=name,
+                    metadata=metadata or {},
+                    as_type="span",
+                )
+            except Exception as exc:
+                logger = get_logger()
+                logger.warning("langfuse_trace_failed", error=str(exc))
+                trace_obj = MockTrace()
         else:
-            class MockTrace:
-                def span(self, name: str, **kwargs):
-                    return self
+            trace_obj = MockTrace()
 
-                def log(self, **kwargs):
-                    return None
-
-                def set_status(self, status: str):
-                    return None
-
-            yield MockTrace()
+        try:
+            if hasattr(trace_obj, "__enter__"):
+                with trace_obj as trace:
+                    yield trace
+            else:
+                yield trace_obj
+        finally:
+            return
 
 
 # Singleton

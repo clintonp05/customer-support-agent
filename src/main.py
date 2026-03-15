@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from src.api.routes import router as api_router
 from src.constants import X_REQUEST_ID_HEADER, X_CHANNEL_ID_HEADER, MISSING_HEADERS_ERROR
 from src.observability.logger import setup_logging, bind_request_context, get_logger
+from src.observability.infra_health import run_health_checks_async
 from src.db.connector import init_db_pool, close_db_pool
 from src.rag.retriever import get_retriever
 
@@ -12,7 +13,7 @@ from src.rag.retriever import get_retriever
 def create_app() -> FastAPI:
     setup_logging()
     app = FastAPI(
-        title="Noon Prep Support Agent",
+        title="ecom-cst-asst-agent",
         description="Customer support microservice using LangGraph orchestration",
         version="0.1.0"
     )
@@ -30,6 +31,8 @@ def create_app() -> FastAPI:
         request_id = request.headers.get(X_REQUEST_ID_HEADER)
         channel_id = request.headers.get(X_CHANNEL_ID_HEADER)
 
+        if request.url.path in {"/ui", "/health", "/metrics"}:
+            return await call_next(request)
         if not request_id or not channel_id:
             return JSONResponse({"detail": MISSING_HEADERS_ERROR}, status_code=400)
 
@@ -50,7 +53,7 @@ def create_app() -> FastAPI:
 
 async def startup():
     logger = get_logger()
-    logger.info("startup", msg="Noon Prep API starting up")
+    logger.info("startup", msg="ecom-cst-asst-agent API starting up")
     try:
         init_db_pool(minconn=1, maxconn=10, retries=5, delay_s=1.0)
     except Exception as exc:
@@ -63,11 +66,15 @@ async def startup():
         logger.info("startup.rag_initialized", msg="RAG retriever and embedder initialized")
     except Exception as exc:
         logger.exception("startup.rag_init_failed", exc=str(exc))
+    try:
+        await run_health_checks_async()
+    except Exception as exc:
+        logger.warning("startup.infra_health_failed", error=str(exc))
 
 
 async def shutdown():
     logger = get_logger()
-    logger.info("shutdown", msg="Noon Prep API shutting down")
+    logger.info("shutdown", msg="ecom-cst-asst-agent API shutting down")
     try:
         close_db_pool()
     except Exception as exc:

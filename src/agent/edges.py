@@ -13,7 +13,7 @@ def route_after_guard(state: ConversationState) -> str:
 
 def route_after_query_analyse(state: ConversationState) -> str:
     """Route after query analysis"""
-    return state.get("next_node", "extract_params")
+    return state.get("next_node", "complex_query_orchestrator")
 
 
 def route_after_classify(state: ConversationState) -> str:

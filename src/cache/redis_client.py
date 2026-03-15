@@ -9,6 +9,7 @@ logger = get_logger()
 try:
     import redis  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
+    logger.warning("redis_import_failed", reason="install `pip install redis`, Redis features will be unavailable")
     redis = None
 
 _client: Optional["redis.Redis"] = None

@@ -1,5 +1,14 @@
-from typing import TypedDict, List, Optional, Dict, Any
+from typing import TypedDict, List, Optional, Dict, Any, Annotated
 from datetime import datetime
+
+
+def merge_dicts(left: Optional[Dict[str, Any]], right: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    if left:
+        merged.update(left)
+    if right:
+        merged.update(right)
+    return merged
 
 
 class ConversationState(TypedDict):
@@ -18,7 +27,10 @@ class ConversationState(TypedDict):
     primary_intent: str
     intent_confidence: float
     intent_support_status: str  # SUPPORTED / IN_DOMAIN_OUT_OF_SCOPE / UNSUPPORTED
-    query_analysis: Dict[str, Any]
+    query_analysis: Annotated[Dict[str, Any], merge_dicts]
+    timings_ms: Annotated[Dict[str, float], merge_dicts]
+    response_source: str
+    cache_payload: Optional[Dict[str, Any]]
 
     # Params
     extracted_params: Dict[str, Any]

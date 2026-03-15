@@ -1,0 +1,5 @@
+{"conversation_id":"golden-1","user_id":"USR-10001","session_id":"s1","order_id":"N-20260314-ITIKF","message":"Where is my order?","messages":[],"execution_budget_ms":8000}
+{"conversation_id":"golden-2","user_id":"USR-10002","session_id":"s1","order_id":"N-20260314-ITIKF","message":"I want a refund for my order.","messages":[{"role":"user","content":"My package arrived damaged."}],"execution_budget_ms":8000}
+{"conversation_id":"golden-3","user_id":"USR-10003","session_id":"s1","order_id":"N-20260314-ITIKF","product_id":"P-0001","message":"I need to file a warranty claim for my laptop.","messages":[],"execution_budget_ms":8000}
+{"conversation_id":"golden-4","user_id":"USR-10004","session_id":"s1","order_id":"N-20260314-ITIKF","message":"Track my delivery status please.","messages":[],"execution_budget_ms":8000}
+{"conversation_id":"golden-5","user_id":"USR-10005","session_id":"s1","order_id":"N-20260314-ITIKF","message":"I need help: I want a refund for the damaged item and also tell me where my order is right now because the tracking is confusing and I keep getting different status updates.","messages":[],"execution_budget_ms":8000}

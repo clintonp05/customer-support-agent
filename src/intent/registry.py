@@ -189,6 +189,32 @@ INTENT_REGISTRY = {
         },
         "fallback": "escalate_to_human"
     },
+    "end_conversation": {
+        "supported": True,
+        "utterances": [
+            "thanks",
+            "thank you",
+            "thx",
+            "bye",
+            "goodbye",
+            "that's all",
+            "that is all",
+            "no thanks",
+            "all good",
+            "resolved",
+            "done",
+            "ok thanks",
+            "appreciate it",
+            "شكرا",
+            "مع السلامة",
+        ],
+        "conditions": [],
+        "required_params": [],
+        "tool_chain": {
+            "sequential": []
+        },
+        "fallback": "escalate_to_human"
+    },
 }
 
 # Intent support status constants

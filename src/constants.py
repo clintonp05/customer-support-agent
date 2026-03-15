@@ -1,4 +1,4 @@
-"""Shared constants for the Noon Prep agent."""
+"""Shared constants for the ecom-cst-asst-agent."""
 
 # API header constants
 X_REQUEST_ID_HEADER = "x-request-id"

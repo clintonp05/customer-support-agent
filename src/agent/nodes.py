@@ -3,12 +3,14 @@ import uuid
 import time
 import re
 import json
+import hashlib
 from typing import Dict, Any, Optional, List
 
 from src.agent.state import ConversationState
 from src.intent.registry import INTENT_REGISTRY, SUPPORT_STATUS
 from src.intent.classifier import IntentClassifier
 from src.intent.supported_check import check_intent_support
+from src.intent.multi_intent import split_into_intents
 from src.params.extractor import extract_params
 from src.params.validator import validate_params, TOOL_PARAM_SCHEMAS
 from src.tools.manifest import get_tool, get_tool_chain
@@ -33,10 +35,16 @@ prompt_hub = PromptHubClient()
 logger = get_logger()
 
 STOP_CHAR_PATTERN = re.compile(r"[.!?;:]+")
+REACT_PROMPT_TEMPLATE = (
+    "You are an orchestrator. Analyze the user's complex query, identify distinct intents, "
+    "and propose refined sub-queries for each intent. "
+    "Return a short plan with bullet points (no tools)."
+)
 
 @trace_node("guard_input")
 async def guard_input_node(state: ConversationState) -> Dict[str, Any]:
     """Input guard: toxicity, PII detection, language detection"""
+    start = time.perf_counter()
     raw_query = state["raw_query"]
     logger.info("guard_input.start", raw_query=raw_query[:100])
 
@@ -61,12 +69,39 @@ async def guard_input_node(state: ConversationState) -> Dict[str, Any]:
         logger.info("guard_input.pii_masked", pii_types=pii_types)
 
     logger.info("guard_input.complete", language=language, is_toxic=is_toxic, pii_count=len(pii_types) if pii_types else 0)
+    cache_key = None
+    cache_hit = False
+    cache_payload = None
+    redis_client = get_redis_client()
+    if redis_client is not None:
+        key = hashlib.sha256(raw_query.strip().lower().encode("utf-8")).hexdigest()
+        cache_key = f"query_hash:{key}"
+        try:
+            cached = redis_client.get(cache_key)
+            cache_hit = cached is not None
+            logger.info("cache.lookup", key=cache_key, hit=cache_hit)
+            if cache_hit:
+                cache_payload = json.loads(cached)
+        except Exception as exc:
+            logger.warning("cache.lookup_failed", error=str(exc))
+    elapsed_ms = (time.perf_counter() - start) * 1000
     return {
-        "next_node": "query_analyser",
+        "next_node": "serve_cache" if cache_hit else "query_analyser",
         "extracted_params": {
             **state.get("extracted_params", {}),
             "language": language,
             "original_query": raw_query
+        },
+        "query_analysis": {
+            **state.get("query_analysis", {}),
+            "cache_key": cache_key,
+            "cache_hit": cache_hit,
+        }
+        ,
+        "cache_payload": cache_payload,
+        "timings_ms": {
+            **state.get("timings_ms", {}),
+            "guard_input": elapsed_ms
         }
     }
 
@@ -80,18 +115,24 @@ async def query_analyser_node(state: ConversationState) -> Dict[str, Any]:
 @trace_node("intent_analyser")
 async def intent_analyser_node(state: ConversationState) -> Dict[str, Any]:
     """Intent classification sub-agent."""
+    start = time.perf_counter()
     raw_query = state["raw_query"]
     intent, confidence = await classifier.classify(raw_query)
     logger.info("intent_analyser.complete", intent=intent, confidence=confidence)
 
     support_status, reason = check_intent_support(intent, state)
 
+    elapsed_ms = (time.perf_counter() - start) * 1000
     return {
         "detected_intents": [intent] if intent else [],
         "primary_intent": intent or "",
         "intent_confidence": confidence,
         "intent_support_status": support_status,
         "escalation_reason": reason if support_status != SUPPORT_STATUS["SUPPORTED"] else None,
+        "timings_ms": {
+            **state.get("timings_ms", {}),
+            "intent_classification": elapsed_ms
+        }
     }
 
 
@@ -111,6 +152,7 @@ def _heuristic_complexity(word_count: int, sentence_count: int) -> str:
 @trace_node("complexity_analyser")
 async def complexity_analyser_node(state: ConversationState) -> Dict[str, Any]:
     """Analyze query complexity via LLM + sentence heuristics."""
+    start = time.perf_counter()
     raw_query = state["raw_query"]
     segments = _split_by_stop_chars(raw_query)
     sentence_count = len(segments)
@@ -141,6 +183,7 @@ async def complexity_analyser_node(state: ConversationState) -> Dict[str, Any]:
     heuristic = _heuristic_complexity(word_count, sentence_count)
     final_complexity = llm_complexity or heuristic
 
+    elapsed_ms = (time.perf_counter() - start) * 1000
     return {
         "query_analysis": {
             **state.get("query_analysis", {}),
@@ -154,6 +197,11 @@ async def complexity_analyser_node(state: ConversationState) -> Dict[str, Any]:
             "stop_char_splits": sentence_count,
             "segments": segments,
         }
+        ,
+        "timings_ms": {
+            **state.get("timings_ms", {}),
+            "complexity_analysis": elapsed_ms
+        }
     }
 
 
@@ -163,6 +211,91 @@ async def query_analyse_join_node(state: ConversationState) -> Dict[str, Any]:
     support_status = state.get("intent_support_status", SUPPORT_STATUS["SUPPORTED"])
     if support_status != SUPPORT_STATUS["SUPPORTED"]:
         return {"next_node": "handle_unsupported"}
+    return {"next_node": "complex_query_orchestrator"}
+
+
+@trace_node("complex_query_orchestrator")
+async def complex_query_orchestrator_node(state: ConversationState) -> Dict[str, Any]:
+    """Orchestrator for complex query analysis."""
+    raw_query = state["raw_query"]
+    char_count = state.get("query_analysis", {}).get("char_count", len(raw_query))
+    intent_segments = split_into_intents(raw_query)
+    is_complex = len(intent_segments) > 1 and char_count > 100
+
+    react_plan = None
+    if is_complex:
+        try:
+            client = LLMConnectorClient("BALANCED")
+            react_prompt = f"{REACT_PROMPT_TEMPLATE}\n\nUser Query: {raw_query}\n"
+            react_result = client.generate(react_prompt, max_tokens=256)
+            if react_result.get("success"):
+                react_plan = react_result.get("response", "").strip()
+        except Exception as exc:
+            logger.warning("complex_query.react_failed", error=str(exc))
+
+    return {
+        "query_analysis": {
+            **state.get("query_analysis", {}),
+            "multi_intents": intent_segments,
+            "intent_count": len(intent_segments),
+            "is_complex": is_complex,
+            "complexity_reason": "multi_intent_and_char_count" if is_complex else "simple_or_short",
+            "react_plan": react_plan,
+        }
+    }
+
+
+@trace_node("complex_intent_agent")
+async def complex_intent_agent_node(state: ConversationState) -> Dict[str, Any]:
+    """Sub-agent: classify each intent chunk in a complex query."""
+    analysis = state.get("query_analysis", {})
+    if not analysis.get("is_complex"):
+        return {}
+
+    intent_segments = analysis.get("multi_intents", [])
+    labels = []
+    confidences = []
+    for segment in intent_segments:
+        intent, confidence = await classifier.classify(segment)
+        labels.append(intent)
+        confidences.append(confidence)
+
+    primary_intent = ""
+    if labels and confidences:
+        best_idx = max(range(len(confidences)), key=lambda i: confidences[i])
+        primary_intent = labels[best_idx] or ""
+
+    return {
+        "detected_intents": [label for label in labels if label],
+        "primary_intent": primary_intent or state.get("primary_intent", ""),
+        "query_analysis": {
+            **analysis,
+            "multi_intent_labels": labels,
+            "multi_intent_confidences": confidences,
+        },
+    }
+
+
+@trace_node("complex_refine_agent")
+async def complex_refine_agent_node(state: ConversationState) -> Dict[str, Any]:
+    """Sub-agent: refine intent chunks for downstream analysis."""
+    analysis = state.get("query_analysis", {})
+    if not analysis.get("is_complex"):
+        return {}
+
+    intent_segments = analysis.get("multi_intents", [])
+    refined = [segment.strip() for segment in intent_segments if segment.strip()]
+    return {
+        "query_analysis": {
+            **analysis,
+            "refined_queries": refined,
+        }
+    }
+
+
+@trace_node("complex_query_join")
+async def complex_query_join_node(state: ConversationState) -> Dict[str, Any]:
+    """Join complex sub-agents and continue."""
     return {"next_node": "extract_params"}
 
 
@@ -192,6 +325,7 @@ async def classify_intent_node(state: ConversationState) -> Dict[str, Any]:
 @trace_node("extract_params")
 async def extract_params_node(state: ConversationState) -> Dict[str, Any]:
     """Extract parameters from conversation"""
+    start = time.perf_counter()
     intent = state["primary_intent"]
     messages = state["messages"]
 
@@ -211,15 +345,21 @@ async def extract_params_node(state: ConversationState) -> Dict[str, Any]:
 
     logger.info("extract_params.complete", intent=intent, extracted_params=list(extracted.keys()), required_params=required_params)
 
+    elapsed_ms = (time.perf_counter() - start) * 1000
     return {
         "extracted_params": extracted,
-        "next_node": "validate_params"
+        "next_node": "validate_params",
+        "timings_ms": {
+            **state.get("timings_ms", {}),
+            "param_extraction": elapsed_ms
+        }
     }
 
 
 @trace_node("validate_params")
 async def validate_params_node(state: ConversationState) -> Dict[str, Any]:
     """Validate extracted parameters"""
+    start = time.perf_counter()
     intent = state["primary_intent"]
     extracted_params = state["extracted_params"]
 
@@ -234,10 +374,15 @@ async def validate_params_node(state: ConversationState) -> Dict[str, Any]:
 
     if missing:
         logger.info("validate_params.incomplete", intent=intent, missing_params=missing)
+        elapsed_ms = (time.perf_counter() - start) * 1000
         return {
             "param_validation_status": PARAM_STATUS_INCOMPLETE,
             "missing_params": missing,
-            "next_node": "request_params"
+            "next_node": "request_params",
+            "timings_ms": {
+                **state.get("timings_ms", {}),
+                "param_validation": elapsed_ms
+            }
         }
 
     # Validate param formats
@@ -247,24 +392,39 @@ async def validate_params_node(state: ConversationState) -> Dict[str, Any]:
         if not is_valid:
             if swap_error:
                 logger.warning("validate_params.swap_detected", intent=intent, tool_name=tool_name)
+                elapsed_ms = (time.perf_counter() - start) * 1000
                 return {
                     "param_validation_status": PARAM_STATUS_SWAP,
                     "missing_params": [],
-                    "next_node": "handle_param_error"
+                    "next_node": "handle_param_error",
+                    "timings_ms": {
+                        **state.get("timings_ms", {}),
+                        "param_validation": elapsed_ms
+                    }
                 }
             if missing_params:
                 logger.info("validate_params.incomplete_after_validation", intent=intent, missing_params=missing_params)
+                elapsed_ms = (time.perf_counter() - start) * 1000
                 return {
                     "param_validation_status": "INCOMPLETE",
                     "missing_params": missing_params,
-                    "next_node": "request_params"
+                    "next_node": "request_params",
+                    "timings_ms": {
+                        **state.get("timings_ms", {}),
+                        "param_validation": elapsed_ms
+                    }
                 }
 
     logger.info("validate_params.complete", intent=intent, status="COMPLETE")
+    elapsed_ms = (time.perf_counter() - start) * 1000
     return {
         "param_validation_status": PARAM_STATUS_COMPLETE,
         "missing_params": [],
-        "next_node": "execute_tools"
+        "next_node": "execute_tools",
+        "timings_ms": {
+            **state.get("timings_ms", {}),
+            "param_validation": elapsed_ms
+        }
     }
 
 
@@ -302,6 +462,7 @@ async def handle_param_error_node(state: ConversationState) -> Dict[str, Any]:
 @trace_node("execute_tools")
 async def execute_tools_node(state: ConversationState) -> Dict[str, Any]:
     """Execute tool chain"""
+    start = time.perf_counter()
     intent = state["primary_intent"]
     params = state["extracted_params"]
     tool_chain = get_tool_chain(intent)
@@ -325,11 +486,15 @@ async def execute_tools_node(state: ConversationState) -> Dict[str, Any]:
             continue
 
         try:
+            tool_start = time.perf_counter()
             logger.info("execute_tools.executing", tool_name=tool_name)
             result = await tool.execute(params, state)
+            tool_elapsed = (time.perf_counter() - tool_start) * 1000
             results[tool_name] = result
             tools_executed.append(tool_name)
             logger.info("execute_tools.tool_result", tool_name=tool_name, success=result.get("success", True))
+            state.setdefault("timings_ms", {})
+            state["timings_ms"][f"tool:{tool_name}"] = tool_elapsed
         except CircuitOpenError:
             # Circuit breaker open - escalate
             logger.error("execute_tools.circuit_open", tool_name=tool_name)
@@ -349,17 +514,23 @@ async def execute_tools_node(state: ConversationState) -> Dict[str, Any]:
     budget_spent = int((time.time() - budget_start) * 1000)
     logger.info("execute_tools.complete", tools_executed=tools_executed, budget_spent_ms=budget_spent)
 
+    elapsed_ms = (time.perf_counter() - start) * 1000
     return {
         "tool_results": results,
         "tools_executed": tools_executed,
         "budget_spent_ms": budget_spent,
-        "next_node": "generate_response"
+        "next_node": "generate_response",
+        "timings_ms": {
+            **state.get("timings_ms", {}),
+            "execute_tools_total": elapsed_ms
+        }
     }
 
 
 @trace_node("generate_response")
 async def generate_response_node(state: ConversationState) -> Dict[str, Any]:
     """Generate final response based on tool results"""
+    start = time.perf_counter()
     intent = state["primary_intent"]
     tool_results = state["tool_results"]
     extracted_params = state["extracted_params"]
@@ -370,27 +541,44 @@ async def generate_response_node(state: ConversationState) -> Dict[str, Any]:
     context = ""
     if intent in {"refund_request", "warranty_claim"}:
         logger.info("generate_response.retrieving_knowledge", intent=intent)
+        rag_start = time.perf_counter()
         knowledge = await retrieve_knowledge(query)
+        rag_elapsed = (time.perf_counter() - rag_start) * 1000
         context = knowledge.get("content", "") if knowledge else ""
         logger.info("generate_response.knowledge_retrieved", context_length=len(context))
+        state.setdefault("timings_ms", {})
+        state["timings_ms"]["rag_retrieval"] = rag_elapsed
 
     # Build simple conversation string
     conversation_text = "\n".join(
         [f"{msg.get('role', 'user')}: {msg.get('content', '')}" for msg in state.get("messages", [])]
     )
 
-    response = await generate_response(intent, tool_results, extracted_params, conversation_text, context)
+    response_result = await generate_response(intent, tool_results, extracted_params, conversation_text, context)
+    response = response_result["text"]
+    response_source = response_result["source"]
+    llm_ms = response_result.get("llm_ms")
+    if llm_ms is not None:
+        state.setdefault("timings_ms", {})
+        state["timings_ms"]["llm_generation"] = llm_ms
     logger.info("generate_response.complete", intent=intent, response_length=len(response), response_snippet=response[:80])
+    elapsed_ms = (time.perf_counter() - start) * 1000
 
     return {
         "final_response": response,
-        "next_node": "persist_response"
+        "next_node": "persist_response",
+        "response_source": response_source,
+        "timings_ms": {
+            **state.get("timings_ms", {}),
+            "generate_response_total": elapsed_ms
+        }
     }
 
 
 @trace_node("persist_response")
 async def persist_response_node(state: ConversationState) -> Dict[str, Any]:
     """Persist final response to DB and cache query/response in Redis."""
+    start = time.perf_counter()
     conversation_id = state.get("conversation_id", "")
     user_id = state.get("user_id", "")
     session_id = state.get("session_id", "")
@@ -434,14 +622,36 @@ async def persist_response_node(state: ConversationState) -> Dict[str, Any]:
             else:
                 redis_client.set(key, json.dumps(payload, ensure_ascii=False))
             logger.info("persist_response.redis_complete", key=key)
+            cache_key = query_analysis.get("cache_key")
+            if cache_key:
+                if ttl_s > 0:
+                    redis_client.setex(cache_key, ttl_s, json.dumps(payload, ensure_ascii=False))
+                else:
+                    redis_client.set(cache_key, json.dumps(payload, ensure_ascii=False))
+                logger.info("persist_response.redis_cache_complete", key=cache_key)
         except Exception as exc:
             logger.warning("persist_response.redis_failed", error=str(exc))
 
-    return {"next_node": "end"}
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    return {"next_node": "end", "timings_ms": {**state.get("timings_ms", {}), "persist_response": elapsed_ms}}
 
 
-async def generate_response(intent: str, tool_results: Dict, params: Dict, conversation: str, context: str) -> str:
+@trace_node("serve_cache")
+async def serve_cache_node(state: ConversationState) -> Dict[str, Any]:
+    """Serve response from Redis cache if available."""
+    cached = state.get("cache_payload") or {}
+    response = cached.get("final_response", "")
+    return {
+        "final_response": response or "Cached response not available.",
+        "response_source": "redis",
+        "next_node": "persist_response",
+    }
+
+
+async def generate_response(intent: str, tool_results: Dict, params: Dict, conversation: str, context: str) -> Dict[str, Any]:
     """Generate response based on intent and tool results"""
+    llm_ms = None
+    source = "fallback"
 
     # Check for escalation needed
     for tool_name, result in tool_results.items():
@@ -459,40 +669,44 @@ async def generate_response(intent: str, tool_results: Dict, params: Dict, conve
             tier = "BALANCED"
 
         # Use tool results to construct final answer
-        llm_response = llm_generate_response(intent, conversation, tool_results, params, context=context, speed_tier=tier)
+        llm_payload = llm_generate_response(intent, conversation, tool_results, params, context=context, speed_tier=tier, return_meta=True)
+        llm_response = llm_payload.get("response")
+        llm_ms = llm_payload.get("elapsed_ms")
         if llm_response:
-            return llm_response
+            return {"text": llm_response, "source": "llm", "llm_ms": llm_ms}
 
     if intent == "refund_request":
         refund_result = tool_results.get("initiate_refund", {})
         if refund_result.get("success"):
-            return f"Your refund has been processed! Refund ID: {refund_result.get('refund_id')}. The amount will be credited to your account within 5-7 business days."
+            return {"text": f"Your refund has been processed! Refund ID: {refund_result.get('refund_id')}. The amount will be credited to your account within 5-7 business days.", "source": source}
 
     elif intent == "order_status":
         order_result = tool_results.get("check_order", {})
         if order_result.get("success"):
             order = order_result.get("order", {})
             logger.info("generate_response.order_status", order_id=order.get("order_id"), status=order.get("status"))
-            return f"Your order {order.get('order_id')} is currently: {order.get('status', 'Unknown')}. Total: ${order.get('total_amount', 0):.2f}"
+            return {"text": f"Your order {order.get('order_id')} is currently: {order.get('status', 'Unknown')}. Total: ${order.get('total_amount', 0):.2f}", "source": source}
         if order_result.get("error") == "ORDER_NOT_FOUND" or "not found" in str(order_result.get("message", "")).lower():
-            return "Order not found. Please verify the order ID and try again."
+            return {"text": "Order not found. Please verify the order ID and try again.", "source": source}
 
     elif intent == "delivery_tracking":
         tracking_result = tool_results.get("track_delivery", {})
         if tracking_result.get("success"):
             tracking = tracking_result.get("tracking", {})
-            return f"Current status: {tracking.get('status', 'Unknown')}. Location: {tracking.get('current_location', 'N/A')}. Carrier: {tracking.get('carrier', 'N/A')}"
+            return {"text": f"Current status: {tracking.get('status', 'Unknown')}. Location: {tracking.get('current_location', 'N/A')}. Carrier: {tracking.get('carrier', 'N/A')}", "source": source}
 
     elif intent == "warranty_claim":
         claim_result = tool_results.get("initiate_claim", {})
         if claim_result.get("success"):
-            return f"Your warranty claim has been initiated! Claim ID: {claim_result.get('claim_id')}. " + " ".join(claim_result.get("next_steps", []))
+            return {"text": f"Your warranty claim has been initiated! Claim ID: {claim_result.get('claim_id')}. " + " ".join(claim_result.get("next_steps", [])), "source": source}
 
     elif intent == "speak_to_human":
-        return "I'll connect you with a customer support agent. Please hold on for a moment."
+        return {"text": "I'll connect you with a customer support agent. Please hold on for a moment.", "source": source}
+    elif intent == "end_conversation":
+        return {"text": "Thanks for contacting us. If you need anything else, just let me know!", "source": "rule"}
 
     # Generic response
-    return "I've processed your request. Is there anything else I can help you with?"
+    return {"text": "I've processed your request. Is there anything else I can help you with?", "source": source}
 
 
 @trace_node("handle_unsupported")
@@ -553,10 +767,15 @@ async def escalate_node(state: ConversationState) -> Dict[str, Any]:
 # Node mapping
 NODES = {
     "guard_input": guard_input_node,
+    "serve_cache": serve_cache_node,
     "query_analyser": query_analyser_node,
     "intent_analyser": intent_analyser_node,
     "complexity_analyser": complexity_analyser_node,
     "query_analyse_join": query_analyse_join_node,
+    "complex_query_orchestrator": complex_query_orchestrator_node,
+    "complex_intent_agent": complex_intent_agent_node,
+    "complex_refine_agent": complex_refine_agent_node,
+    "complex_query_join": complex_query_join_node,
     "classify_intent": classify_intent_node,
     "extract_params": extract_params_node,
     "validate_params": validate_params_node,
