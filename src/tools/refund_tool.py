@@ -1,16 +1,47 @@
+import json
 import uuid
 import hashlib
 from src.tools.base import BaseTool
 from src.db.queries import get_order_by_id, get_refunds_by_order
-from typing import Dict, Any
+from src.cache.redis_client import get_redis_client
+from src.observability.logger import get_logger
+from typing import Dict, Any, Optional
+
+logger = get_logger()
+
+_IDEM_TTL_S = 86400 * 7  # 7 days
 
 
 class RefundTool(BaseTool):
-    """Refund API tool with idempotency keys"""
+    """Refund API tool with Redis-backed idempotency keys (falls back to in-memory)."""
 
     def __init__(self):
         super().__init__(name="refund_tool")
-        self._processed_refunds: Dict[str, dict] = {}
+        self._processed_refunds: Dict[str, dict] = {}  # in-memory fallback only
+
+    def _idem_redis_key(self, idem_key: str) -> str:
+        return f"refund_idem:{idem_key}"
+
+    def _idem_get(self, idem_key: str) -> Optional[dict]:
+        redis = get_redis_client()
+        if redis is not None:
+            try:
+                raw = redis.get(self._idem_redis_key(idem_key))
+                if raw:
+                    return json.loads(raw)
+            except Exception as exc:
+                logger.warning("refund_tool.idem_redis_read_failed", error=str(exc))
+        return self._processed_refunds.get(idem_key)
+
+    def _idem_set(self, idem_key: str, result: dict) -> None:
+        redis = get_redis_client()
+        if redis is not None:
+            try:
+                redis.setex(self._idem_redis_key(idem_key), _IDEM_TTL_S, json.dumps(result, ensure_ascii=False))
+                return
+            except Exception as exc:
+                logger.warning("refund_tool.idem_redis_write_failed", error=str(exc))
+        self._processed_refunds[idem_key] = result  # fallback
 
     async def _call(self, params: dict, state: dict) -> dict:
         order_id = params.get("order_id")
@@ -24,7 +55,7 @@ class RefundTool(BaseTool):
         if not order:
             return {"success": False, "error": "ORDER_NOT_FOUND", "message": f"Order {order_id} not found"}
 
-        # Prevent double refunds for the same order
+        # Prevent double refunds for the same order (DB-level check)
         existing_refunds = get_refunds_by_order(order_id=order_id, user_id=user_id)
         if existing_refunds:
             return {
@@ -33,9 +64,12 @@ class RefundTool(BaseTool):
                 "message": "A refund has already been processed for this order"
             }
 
+        # Idempotency check — Redis first, in-memory fallback
         idem_key = self._generate_idempotency_key(order_id, user_id)
-        if idem_key in self._processed_refunds:
-            return self._processed_refunds[idem_key]
+        cached = self._idem_get(idem_key)
+        if cached:
+            logger.info("refund_tool.idem_hit", idem_key=idem_key)
+            return cached
 
         refund_id = f"REF-{uuid.uuid4().hex[:12].upper()}"
         result = {
@@ -49,7 +83,7 @@ class RefundTool(BaseTool):
             "idempotency_key": idem_key,
         }
 
-        self._processed_refunds[idem_key] = result
+        self._idem_set(idem_key, result)
         return result
 
     def _generate_idempotency_key(self, order_id: str, user_id: str) -> str:

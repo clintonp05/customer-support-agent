@@ -73,6 +73,10 @@ class ConversationService:
             "escalation_required": False,
             "escalation_reason": None,
             "final_response": None,
+            "emotion": None,
+            "customer_history": None,
+            "escalation_packet": None,
+            "progress_messages": None,
             "trace_id": str(uuid.uuid4()),
             "prompt_versions": {},
         }

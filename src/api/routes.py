@@ -1,15 +1,19 @@
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import time
 import functools
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+import asyncio
+import json
 
 from src.constants import X_REQUEST_ID_HEADER, X_CHANNEL_ID_HEADER, MISSING_HEADERS_ERROR, DEFAULT_EXECUTION_BUDGET_MS
 from src.services.conversation_service import conversation_service
 from src.observability.logger import get_logger
 from src.observability.tracer import get_tracer
+from src.agent.nodes import register_token_queue, deregister_token_queue
 
 router = APIRouter()
 
@@ -50,6 +54,8 @@ class ConversationResponse(BaseModel):
     trace_id: str
     response_source: str = ""
     timings_ms: Dict[str, Any] = Field(default_factory=dict)
+    emotion: Optional[Dict[str, Any]] = None
+    escalation_packet: Optional[Dict[str, Any]] = None
 
 
 @router.get("/health")
@@ -286,6 +292,7 @@ def ui():
       const orderIdEl = document.getElementById("orderId");
       let messages = [];
       let typingTimer = null;
+      let streamingBubble = null;
 
       function log(msg) {
         logEl.textContent += msg + "\\n";
@@ -401,7 +408,7 @@ def ui():
         let thinkingTimer = setTimeout(() => {
           thinkingEl.textContent = "Thinking longer to answer...";
         }, 2000);
-        const res = await fetch("/support", {
+        const res = await fetch("/support/stream", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -410,27 +417,59 @@ def ui():
           },
           body: JSON.stringify(payload)
         });
-        const text = await res.text();
-        const elapsed = Math.round(performance.now() - start);
-        log(`Status: ${res.status} | ${elapsed} ms`);
-        responseEl.textContent = text;
-        responseEl.scrollTop = responseEl.scrollHeight;
-        thinkingEl.style.display = "none";
-        clearTimeout(thinkingTimer);
-        try {
-          const parsed = JSON.parse(text);
-          if (parsed && parsed.final_response) {
-            messages.push({ role: "assistant", content: parsed.final_response });
-            typeAssistant(parsed.final_response);
-            if (parsed.timings_ms) {
-              log(formatTiming(parsed.timings_ms));
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let fullText = "";
+        let firstChunkAt = null;
+        streamingBubble = appendBubble("assistant", "", false);
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\\n\\n");
+          buffer = parts.pop() || "";
+          for (const part of parts) {
+            if (part.startsWith("event: meta")) {
+              const dataLine = part.split("\\n").find((l) => l.startsWith("data: "));
+              if (dataLine) {
+                const meta = JSON.parse(dataLine.replace("data: ", ""));
+                log(`Status: ${res.status}`);
+                log(`Server TTFT: ${Math.round(meta.server_ttft_ms || 0)} ms`);
+                if (meta.timings_ms) log(formatTiming(meta.timings_ms));
+                if (meta.response_source) log(`Response source: ${meta.response_source}`);
+              }
+              continue;
             }
-            if (parsed.response_source) {
-              log(`Response source: ${parsed.response_source}`);
+            if (part.startsWith("event: error")) {
+              const dataLine = part.split("\\n").find((l) => l.startsWith("data: "));
+              if (dataLine) {
+                log(`Error: ${dataLine.replace("data: ", "")}`);
+              }
+              continue;
             }
+            if (part.startsWith("event: end")) {
+              continue;
+            }
+            const dataLine = part.split("\\n").find((l) => l.startsWith("data: "));
+            if (!dataLine) continue;
+            const chunk = dataLine.replace("data: ", "");
+            if (!firstChunkAt) {
+              firstChunkAt = performance.now();
+              log(`Client TTFT: ${Math.round(firstChunkAt - start)} ms`);
+              thinkingEl.style.display = "none";
+              clearTimeout(thinkingTimer);
+            }
+            fullText += chunk;
+            streamingBubble.textContent = fullText;
+            chatEl.scrollTop = chatEl.scrollHeight;
           }
-        } catch (e) {
-          log("Response not JSON");
+        }
+
+        if (fullText) {
+          messages.push({ role: "assistant", content: fullText });
+          streamingBubble.innerHTML = renderMarkdown(fullText);
         }
       });
 
@@ -513,4 +552,99 @@ async def support_query(turn: ConversationTurn, request: Request):
         trace_id=result.get("trace_id", ""),
         response_source=result.get("response_source", ""),
         timings_ms=result.get("timings_ms", {}),
+        emotion=result.get("emotion"),
+        escalation_packet=result.get("escalation_packet"),
     )
+
+
+@router.post("/support/stream")
+@profile_api
+async def support_query_stream(turn: ConversationTurn, request: Request):
+    logger = getattr(request.state, "logger", get_logger())
+    logger.info("support_query.received", conversation_id=turn.conversation_id, user_id=turn.user_id, session_id=turn.session_id)
+
+    tracer = get_tracer()
+
+    async def event_stream():
+        start = time.perf_counter()
+
+        # Register a queue so generate_response_node can push tokens as they arrive
+        token_queue: asyncio.Queue = asyncio.Queue()
+        register_token_queue(turn.conversation_id, token_queue)
+
+        # Run the full pipeline in the background; tokens arrive via the queue
+        async def run_pipeline():
+            async with tracer.trace("support_query"):
+                return await conversation_service.process_conversation(
+                    conversation_id=turn.conversation_id,
+                    user_id=turn.user_id,
+                    session_id=turn.session_id,
+                    message=turn.message,
+                    messages=turn.messages,
+                    order_id=turn.order_id,
+                    product_id=turn.product_id,
+                    payload=turn.payload,
+                    execution_budget_ms=turn.execution_budget_ms,
+                )
+
+        graph_task = asyncio.create_task(run_pipeline())
+
+        first_token_ms: Optional[float] = None
+        try:
+            # Drain the token queue until the None sentinel arrives.
+            # Timeout is 15 s — all bypass paths (cache, param-request, unsupported)
+            # now signal the queue immediately, so a timeout only fires on genuine
+            # LLM hangs, not routing shortcuts.
+            while True:
+                try:
+                    token = await asyncio.wait_for(token_queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    logger.warning("support_query.stream_timeout",
+                                   elapsed_s=round(time.perf_counter() - start, 1))
+                    # Safety net: if graph finished, grab final_response and push it
+                    if graph_task.done():
+                        try:
+                            _state = graph_task.result()
+                            fallback = _state.get("final_response", "")
+                            if fallback:
+                                yield f"data: {fallback}\n\n"
+                        except Exception:
+                            pass
+                    break
+                if token is None:
+                    break
+                # Progress messages are prefixed with __progress__: — send as a
+                # separate SSE event type so the UI can render them as status indicators
+                # rather than appending to the chat bubble.
+                if isinstance(token, str) and token.startswith("__progress__:"):
+                    progress_text = token[len("__progress__:"):]
+                    yield f"event: progress\ndata: {json.dumps({'message': progress_text})}\n\n"
+                    continue
+                if first_token_ms is None:
+                    first_token_ms = (time.perf_counter() - start) * 1000
+                    logger.info("support_query.ttft", ttft_ms=round(first_token_ms, 1))
+                yield f"data: {token}\n\n"
+
+            # Ensure graph has fully finished (it should be, sentinel was sent last)
+            result = await graph_task
+
+        except Exception as exc:
+            logger.error("support_query.failed", error=str(exc))
+            yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
+            graph_task.cancel()
+            return
+        finally:
+            deregister_token_queue(turn.conversation_id)
+
+        total_ms = (time.perf_counter() - start) * 1000
+        meta = {
+            "conversation_id": result.get("conversation_id", turn.conversation_id),
+            "trace_id": result.get("trace_id", ""),
+            "response_source": result.get("response_source", ""),
+            "timings_ms": result.get("timings_ms", {}),
+            "server_ttft_ms": first_token_ms or total_ms,
+        }
+        yield f"event: meta\ndata: {json.dumps(meta)}\n\n"
+        yield "event: end\ndata: {}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")

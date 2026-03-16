@@ -1,0 +1,39 @@
+[
+  {
+    "id": "os-001",
+    "description": "Standard order status query",
+    "conversation": [
+      {"role": "user", "content": "Where is my order N-20260314-ABCDE?"}
+    ],
+    "expected_intent": "order_status",
+    "expected_tool": "check_order",
+    "expected_params": {"order_id": "N-20260314-ABCDE"},
+    "expected_output_contains": ["order", "status"],
+    "expected_output_not_contains": ["$", "USD"],
+    "region": "UAE"
+  },
+  {
+    "id": "os-002",
+    "description": "Order status in Arabic",
+    "conversation": [
+      {"role": "user", "content": "أين طلبي N-20260314-ABCDE؟"}
+    ],
+    "expected_intent": "order_status",
+    "expected_tool": "check_order",
+    "expected_params": {"order_id": "N-20260314-ABCDE"},
+    "expected_output_contains": ["طلب"],
+    "region": "UAE"
+  },
+  {
+    "id": "os-003",
+    "description": "Order total should show AED not USD",
+    "conversation": [
+      {"role": "user", "content": "What is the total for my order N-20260314-ABCDE?"}
+    ],
+    "expected_intent": "order_status",
+    "expected_tool": "check_order",
+    "expected_output_contains": ["AED"],
+    "expected_output_not_contains": ["$", "USD", "$0.00"],
+    "region": "UAE"
+  }
+]

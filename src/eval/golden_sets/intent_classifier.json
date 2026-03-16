@@ -1,0 +1,45 @@
+[
+  {
+    "id": "ic-001",
+    "description": "History contamination prevention: prior order query should not override refund policy query",
+    "conversation": [
+      {"role": "user", "content": "where is my order?"},
+      {"role": "assistant", "content": "Your order N-20260314-ITIKF is out for delivery."},
+      {"role": "user", "content": "what is the refund policy and warranty for the electronic products?"}
+    ],
+    "current_query": "what is the refund policy and warranty for the electronic products?",
+    "expected_intent": "general_inquiry",
+    "expected_intent_not": "order_status",
+    "description_extended": "After two-pass classifier fix, the current query should score high enough on its own to avoid history contamination."
+  },
+  {
+    "id": "ic-002",
+    "description": "Legitimate history use: follow-up order ID needs context",
+    "conversation": [
+      {"role": "user", "content": "where is my order?"},
+      {"role": "assistant", "content": "Could you share your order ID?"},
+      {"role": "user", "content": "N-20260314-ITIKF"}
+    ],
+    "current_query": "N-20260314-ITIKF",
+    "expected_intent": "order_status",
+    "description_extended": "Short ambiguous message — history is needed to resolve intent. Two-pass classifier should fall through to history."
+  },
+  {
+    "id": "ic-003",
+    "description": "End of conversation intent",
+    "conversation": [
+      {"role": "user", "content": "thanks, that's all"}
+    ],
+    "current_query": "thanks, that's all",
+    "expected_intent": "end_conversation"
+  },
+  {
+    "id": "ic-004",
+    "description": "Arabic order status intent",
+    "conversation": [
+      {"role": "user", "content": "أين طلبي؟"}
+    ],
+    "current_query": "أين طلبي؟",
+    "expected_intent": "order_status"
+  }
+]

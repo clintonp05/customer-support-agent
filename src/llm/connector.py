@@ -2,10 +2,11 @@
 import subprocess
 import json
 import time
-from typing import Dict, Any
+from typing import Dict, Any, AsyncGenerator, List, Optional
 
 from src.config import settings
 from src.observability.logger import get_logger
+from src.observability.metrics_exporter import record_llm_tokens
 
 logger = get_logger()
 ANTHROPIC_BACKOFF_S = 300
@@ -64,18 +65,21 @@ class LLMConnectorClient:
             logger.warning("llm.generate.anthropic_health_failed", error=str(exc))
             return False
 
-    def _generate_anthropic(self, prompt: str, max_tokens: int, model: str) -> Dict[str, Any]:
+    def _generate_anthropic(self, prompt: str, max_tokens: int, model: str, system: str = "") -> Dict[str, Any]:
         if anthropic is None:
             return {"success": False, "error": "anthropic SDK not installed"}
         logger.info("llm.generate.anthropic_start", model=model)
-        logger.debug("llm.generate.anthropic_prompt", prompt=prompt, max_tokens=max_tokens)
+        logger.debug("llm.generate.anthropic_prompt", prompt=prompt, max_tokens=max_tokens, has_system=bool(system))
         try:
             client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-            result = client.messages.create(
-                model=model,
-                max_tokens=max_tokens,
-                messages=[{"role": "user", "content": prompt}],
-            )
+            kwargs: Dict[str, Any] = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if system:
+                kwargs["system"] = system
+            result = client.messages.create(**kwargs)
             content = getattr(result, "content", "")
             logger.debug("llm.generate.anthropic_response", response=content, raw_response=str(result))
             if isinstance(content, list):
@@ -92,6 +96,10 @@ class LLMConnectorClient:
                     "status_code": status_code,
                     "transient": transient,
                 }
+            usage = getattr(result, "usage", None)
+            if usage:
+                record_llm_tokens(model, "input", getattr(usage, "input_tokens", 0))
+                record_llm_tokens(model, "output", getattr(usage, "output_tokens", 0))
             return {
                 "success": True,
                 "model": model,
@@ -116,6 +124,46 @@ class LLMConnectorClient:
                 "status_code": status_code,
                 "transient": transient,
             }
+
+    async def _stream_generate_anthropic(
+        self, prompt: str, max_tokens: int, model: str, system: str = ""
+    ) -> AsyncGenerator[str, None]:
+        """Stream text deltas from Anthropic using the async client."""
+        if anthropic is None:
+            yield ""
+            return
+        async_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        kwargs: Dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if system:
+            kwargs["system"] = system
+        try:
+            async with async_client.messages.stream(**kwargs) as stream:
+                async for text in stream.text_stream:
+                    yield text
+        except Exception as exc:
+            logger.warning("llm.stream.anthropic_failed", error=str(exc))
+            return
+
+    async def stream_generate(
+        self, prompt: str, max_tokens: int = 400, system: str = ""
+    ) -> AsyncGenerator[str, None]:
+        """Stream tokens; falls back to single-shot emit for non-Anthropic providers."""
+        model = self.get_model_name()
+        if self._should_use_anthropic():
+            logger.info("llm.stream.start", model=model, tier=self.tier)
+            async for chunk in self._stream_generate_anthropic(prompt, max_tokens, model, system):
+                yield chunk
+            return
+
+        # Gemini / Ollama: run blocking call then emit whole response as one chunk
+        result = self.generate(prompt, max_tokens=max_tokens, system=system)
+        text = result.get("response", "") if result.get("success") else ""
+        if text:
+            yield text
 
     def _should_use_gemini(self) -> bool:
         return bool(settings.gemini_api_key)
@@ -142,14 +190,14 @@ class LLMConnectorClient:
             },
         }
 
-    def generate(self, prompt: str, max_tokens: int = 400) -> Dict[str, Any]:
+    def generate(self, prompt: str, max_tokens: int = 400, system: str = "") -> Dict[str, Any]:
         """Generate text by calling Anthropic (if configured), then Gemini, else ollama run."""
         model = self.get_model_name()
         try:
             start = time.perf_counter()
             logger.info("llm.generate.start", model=model, tier=self.tier, is_anthropic=self._should_use_anthropic(), is_gemini=self._should_use_gemini())
             if self._should_use_anthropic():
-                result = self._generate_anthropic(prompt, max_tokens, model)
+                result = self._generate_anthropic(prompt, max_tokens, model, system=system)
                 if not result.get("success"):
                     logger.warning(
                         "llm.generate.anthropic_failed",
@@ -198,6 +246,105 @@ class LLMConnectorClient:
             return {"success": False, "error": str(exc)}
 
 
+_SYSTEM_PROMPT = """\
+You are a professional customer support assistant for Noon, a leading Middle Eastern e-commerce platform.
+
+Rules you must always follow:
+- Respond in the same language the customer is using (English or Arabic).
+- All amounts are in AED (UAE Dirham). Never use USD or the $ symbol.
+- Be concise, empathetic, and accurate. Do not pad your reply with unnecessary filler.
+- Use ONLY the tool results provided. Never fabricate order details, prices, statuses, or dates.
+- Payment method "cod" means Cash on Delivery — the customer pays upon receipt, not in advance.
+  If payment status is "pending" it means no payment has been collected yet.
+- If the customer's claim contradicts the tool results, politely clarify using the actual data.
+- If you cannot resolve the issue, offer: "I'll connect you with a human agent for further assistance."
+- Do not repeat the question back to the customer verbatim.
+"""
+
+_INTENT_GUIDANCE: Dict[str, str] = {
+    "order_status": (
+        "Report the current order status and total in AED. "
+        "If the customer asks about payment, explain the payment method and its status."
+    ),
+    "delivery_tracking": (
+        "Provide delivery status, current location, estimated arrival, and carrier if available."
+    ),
+    "refund_request": (
+        "Check whether a refund was initiated. If yes, share the refund ID and timeline. "
+        "If not eligible, explain why and offer to escalate."
+    ),
+    "warranty_claim": (
+        "Summarise the warranty claim outcome. If a claim was started, give the claim ID and next steps."
+    ),
+    "product_inquiry": (
+        "Provide the product details requested. Include availability, price in AED, and key specs."
+    ),
+    "general_inquiry": (
+        "Answer the customer's question using the policy/knowledge context provided. "
+        "Cite the relevant policy where applicable."
+    ),
+}
+
+
+def _build_system_prompt(primary_intent: str, detected_intents: Optional[List[str]] = None) -> str:
+    """Build system prompt with guidance for all detected intents.
+
+    For multi-intent queries, every detected intent's guidance is included so
+    the model addresses the full scope of the customer's question in one reply.
+    """
+    system = _SYSTEM_PROMPT
+    intents_for_guidance = detected_intents if detected_intents else [primary_intent]
+
+    if len(intents_for_guidance) == 1:
+        hint = _INTENT_GUIDANCE.get(intents_for_guidance[0], "")
+        if hint:
+            system += f"\nFor this request (intent: {intents_for_guidance[0]}):\n{hint}"
+    else:
+        hints = []
+        for intent in intents_for_guidance:
+            hint = _INTENT_GUIDANCE.get(intent, "")
+            if hint:
+                hints.append(f"- [{intent}]: {hint}")
+        if hints:
+            system += (
+                "\nThis customer has asked about multiple topics. "
+                "Address EACH one in your response:\n" + "\n".join(hints)
+            )
+    return system
+
+
+def _build_user_message(
+    intent: str,
+    conversation: str,
+    tool_results: Dict[str, Any],
+    params: Dict[str, Any],
+    context: str,
+    detected_intents: Optional[List[str]] = None,
+) -> str:
+    """Build the structured user message for the LLM."""
+    intents_label = (
+        ", ".join(detected_intents) if detected_intents and len(detected_intents) > 1 else intent
+    )
+    user_lines = [
+        "=== Conversation history ===",
+        conversation,
+        "",
+        f"=== System data (intents: {intents_label}) ===",
+        json.dumps(tool_results, indent=2, ensure_ascii=False),
+        "",
+        "=== Extracted parameters ===",
+        json.dumps(params, indent=2, ensure_ascii=False),
+    ]
+    if context:
+        user_lines.extend(["", "=== Policy / knowledge context ===", context])
+    user_lines.extend([
+        "",
+        "Based on the data above, respond to the customer's latest message.",
+        "Use only the data provided. Do not invent information.",
+    ])
+    return "\n".join(user_lines)
+
+
 def llm_generate_response(
     intent: str,
     conversation: str,
@@ -206,43 +353,52 @@ def llm_generate_response(
     context: str = "",
     speed_tier: str = "BALANCED",
     return_meta: bool = False,
+    detected_intents: Optional[List[str]] = None,
+    system_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     client = LLMConnectorClient(speed_tier)
-    prompt_lines = [
-        f"Intent: {intent}",
-        "You are a customer support assistant. Use the tool results and context to answer the user clearly.",
-        "User conversation:",
-        conversation,
-        "",
-        "Tool results:",
-        json.dumps(tool_results, indent=2, ensure_ascii=False),
-        "",
-        "Extracted parameters:",
-        json.dumps(params, indent=2, ensure_ascii=False),
-    ]
-    if context:
-        prompt_lines.extend(["", "Retrieved knowledge:", context])
-    prompt_lines.extend(
-        [
-            "",
-            "Instructions:",
-            "1. You are a customer support assistant.",
-            "2. Use the tool results and context to answer the user's query clearly and concisely.",
-            "3. If tool results contradict the conversation, apologize and answer using tool results.",
-            "4. If the conversation is confusing, ask a polite clarification question.",
-            "5. If you lack enough information, say: 'I will transfer you to a human agent for further assistance. Please wait while I connect you.'",
-        ]
-    )
-    prompt = "\n".join(prompt_lines)
+    system = system_override if system_override else _build_system_prompt(intent, detected_intents)
+    user_message = _build_user_message(intent, conversation, tool_results, params, context, detected_intents)
 
-    result = client.generate(prompt)
+    result = client.generate(user_message, system=system)
     if result.get("success"):
         payload = {"response": result.get("response", "I have processed your request."), "elapsed_ms": result.get("elapsed_ms")}
         return payload if return_meta else payload
 
-    # fallback
-    fallback = tool_results.get("check_order", {}).get("order", {})
-    if intent == "order_status" and fallback:
-        return {"response": f"Your order {fallback.get('order_id')} is currently {fallback.get('status', 'Unknown')}.", "elapsed_ms": None}
+    # Fallback when LLM call fails
+    fallback_order = tool_results.get("check_order", {}).get("order", {})
+    if intent == "order_status" and fallback_order:
+        total = fallback_order.get("total_aed", "N/A")
+        return {
+            "response": (
+                f"Your order {fallback_order.get('order_id')} is currently "
+                f"{fallback_order.get('status', 'Unknown')}. Total: {total} AED"
+            ),
+            "elapsed_ms": None,
+        }
 
     return {"response": "I have processed your request. Please let me know if you need anything else.", "elapsed_ms": None}
+
+
+async def llm_stream_generate_response(
+    intent: str,
+    conversation: str,
+    tool_results: Dict[str, Any],
+    params: Dict[str, Any],
+    context: str = "",
+    speed_tier: str = "BALANCED",
+    detected_intents: Optional[List[str]] = None,
+    system_override: Optional[str] = None,
+) -> AsyncGenerator[str, None]:
+    """Streaming counterpart to llm_generate_response — yields text chunks as they arrive.
+
+    detected_intents: when set, multi-intent guidance is included in the system prompt
+    so the model addresses every topic the customer raised.
+    system_override: when set, replaces the default system prompt entirely.
+    """
+    client = LLMConnectorClient(speed_tier)
+    system = system_override if system_override else _build_system_prompt(intent, detected_intents)
+    user_message = _build_user_message(intent, conversation, tool_results, params, context, detected_intents)
+
+    async for chunk in client.stream_generate(user_message, system=system):
+        yield chunk

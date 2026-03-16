@@ -1,0 +1,36 @@
+[
+  {
+    "id": "mi-001",
+    "description": "Refund policy AND warranty in one query (the original failing log case)",
+    "conversation": [
+      {"role": "user", "content": "what is the refund policy and warranty for the electronic products?"}
+    ],
+    "expected_intents": ["refund_request", "warranty_claim"],
+    "expected_intent": "refund_request",
+    "expected_output_contains": ["refund", "warranty"],
+    "expected_output_not_contains": ["I don't have the specific"],
+    "faithfulness_required": true,
+    "region": "UAE"
+  },
+  {
+    "id": "mi-002",
+    "description": "Order status AND delivery tracking",
+    "conversation": [
+      {"role": "user", "content": "where is my order N-20260314-ABCDE and when will it arrive?"}
+    ],
+    "expected_intents": ["order_status", "delivery_tracking"],
+    "expected_output_contains": ["order", "deliver"],
+    "region": "UAE"
+  },
+  {
+    "id": "mi-003",
+    "description": "Multi-intent with clear conjunction splitting",
+    "conversation": [
+      {"role": "user", "content": "Can I get a refund for order N-20260314-ABCDE? Also, what is your return policy?"}
+    ],
+    "expected_intents": ["refund_request", "general_inquiry"],
+    "expected_output_contains": ["refund", "return"],
+    "faithfulness_required": true,
+    "region": "UAE"
+  }
+]

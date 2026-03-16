@@ -1,13 +1,21 @@
-"""Multilingual sentence-transformers embedder"""
+"""Multilingual E5 embedder (intfloat/multilingual-e5-base, 768-dim).
+
+E5 models require prefixes:
+  - Ingestion (passages): "passage: <text>"
+  - Retrieval (queries):  "query: <text>"
+
+Output dimension: 768 (upgraded from 384).
+"""
 from typing import List
-import numpy as np
 
 
 class Embedder:
-    """Sentence transformer embedder for RAG"""
+    """Sentence-transformer embedder using multilingual-e5-base."""
 
-    def __init__(self, model_name: str = "paraphrase-multilingual-MiniLM-L12-v2", device: str = "mps"):
-        self.model_name = model_name
+    MODEL_NAME = "intfloat/multilingual-e5-base"
+    DIM = 768
+
+    def __init__(self, device: str = "mps"):
         self.device = device
         self.model = None
         self._load_model()
@@ -15,30 +23,49 @@ class Embedder:
     def _load_model(self):
         try:
             from sentence_transformers import SentenceTransformer
-            self.model = SentenceTransformer(self.model_name, device=self.device)
+            self.model = SentenceTransformer(self.MODEL_NAME, device=self.device)
         except Exception:
             self.model = None
 
-    def embed(self, texts: List[str]) -> List[List[float]]:
-        """
-        Generate embeddings for texts
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-        Returns:
-            List of embedding vectors
-        """
-        if isinstance(texts, str):
-            texts = [texts]
+    def _add_passage_prefix(self, texts: List[str]) -> List[str]:
+        return [f"passage: {t}" for t in texts]
 
+    def _add_query_prefix(self, texts: List[str]) -> List[str]:
+        return [f"query: {t}" for t in texts]
+
+    def _encode(self, texts: List[str]) -> List[List[float]]:
         if self.model is None:
-            # Fallback deterministic vector if model is unavailable
-            return [[0.1] * 384 for _ in texts]
-
-        emb = self.model.encode(texts, convert_to_numpy=True)
+            return [[0.1] * self.DIM for _ in texts]
+        emb = self.model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
         return emb.tolist()
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def embed(self, texts: List[str]) -> List[List[float]]:
+        """Embed passages for ingestion (adds 'passage: ' prefix)."""
+        if isinstance(texts, str):
+            texts = [texts]
+        return self._encode(self._add_passage_prefix(texts))
+
+    def embed_query(self, texts: List[str]) -> List[List[float]]:
+        """Embed queries for retrieval (adds 'query: ' prefix)."""
+        if isinstance(texts, str):
+            texts = [texts]
+        return self._encode(self._add_query_prefix(texts))
+
     async def aembed(self, texts: List[str]) -> List[List[float]]:
-        """Async embedding"""
+        """Async passage embedding (used by retriever.add_documents)."""
         return self.embed(texts)
+
+    async def aembed_query(self, texts: List[str]) -> List[List[float]]:
+        """Async query embedding (used by retriever.retrieve)."""
+        return self.embed_query(texts)
 
 
 # Singleton
@@ -46,7 +73,6 @@ _embedder = None
 
 
 def get_embedder() -> Embedder:
-    """Get or create the embedder"""
     global _embedder
     if _embedder is None:
         _embedder = Embedder()

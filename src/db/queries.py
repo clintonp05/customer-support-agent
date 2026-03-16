@@ -194,6 +194,100 @@ def get_product_by_id(product_id: str) -> Optional[Dict]:
         raise
 
 
+def get_customer_order_history(user_id: str, limit: int = 5) -> List[Dict]:
+    """Return the most recent orders for a user (for smart param resolution)."""
+    start = time.time()
+    logger.info("db.query.start", query="get_customer_order_history", user_id=user_id, limit=limit)
+    try:
+        with get_db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT o.order_id, o.status, o.total_aed, o.placed_at,
+                       d.status AS delivery_status, d.delivered_at, d.carrier
+                FROM orders o
+                LEFT JOIN deliveries d ON d.order_id = o.order_id
+                WHERE o.user_id = %s
+                ORDER BY o.placed_at DESC
+                LIMIT %s
+                """,
+                (user_id, limit),
+            )
+            results = cur.fetchall()
+            elapsed_ms = int((time.time() - start) * 1000)
+            logger.info("db.query.complete", query="get_customer_order_history",
+                        user_id=user_id, elapsed_ms=elapsed_ms, count=len(results))
+            return _convert_decimals(results)
+    except Exception as e:
+        elapsed_ms = int((time.time() - start) * 1000)
+        logger.error("db.query.error", query="get_customer_order_history",
+                     user_id=user_id, error=str(e), elapsed_ms=elapsed_ms)
+        return []
+
+
+def get_customer_past_issues(user_id: str, days_back: int = 90) -> Dict:
+    """Return summary of past support interactions for a user.
+
+    Queries conversation_turns to count historical issues by intent.
+    Returns a dict with:
+        total_interactions: int
+        delivery_issues: int — past delivery_tracking interactions
+        refund_requests: int — past refund_request interactions
+        last_issue_at: Optional[str] — ISO timestamp of most recent issue
+        is_repeat_delivery_issue: bool
+    """
+    start = time.time()
+    logger.info("db.query.start", query="get_customer_past_issues", user_id=user_id, days_back=days_back)
+    default = {
+        "total_interactions": 0,
+        "delivery_issues": 0,
+        "refund_requests": 0,
+        "last_issue_at": None,
+        "is_repeat_delivery_issue": False,
+    }
+    try:
+        with get_db_cursor() as cur:
+            cur.execute(
+                """
+                SELECT primary_intent, created_at
+                FROM conversation_turns
+                WHERE user_id = %s
+                  AND created_at > NOW() - INTERVAL '%s days'
+                ORDER BY created_at DESC
+                LIMIT 50
+                """,
+                (user_id, days_back),
+            )
+            rows = cur.fetchall()
+            elapsed_ms = int((time.time() - start) * 1000)
+
+            if not rows:
+                logger.info("db.query.complete", query="get_customer_past_issues",
+                            user_id=user_id, elapsed_ms=elapsed_ms, count=0)
+                return default
+
+            total = len(rows)
+            delivery = sum(1 for r in rows if (r.get("primary_intent") or "") == "delivery_tracking")
+            refunds = sum(1 for r in rows if (r.get("primary_intent") or "") == "refund_request")
+            last_at = rows[0].get("created_at")
+
+            result = {
+                "total_interactions": total,
+                "delivery_issues": delivery,
+                "refund_requests": refunds,
+                "last_issue_at": last_at.isoformat() if hasattr(last_at, "isoformat") else str(last_at) if last_at else None,
+                "is_repeat_delivery_issue": delivery >= 1,
+            }
+            logger.info("db.query.complete", query="get_customer_past_issues",
+                        user_id=user_id, elapsed_ms=elapsed_ms, **result)
+            return result
+
+    except Exception as e:
+        elapsed_ms = int((time.time() - start) * 1000)
+        logger.error("db.query.error", query="get_customer_past_issues",
+                     user_id=user_id, error=str(e), elapsed_ms=elapsed_ms)
+        return default
+
+
 def search_products(query_text: str, limit: int = 5) -> List[Dict]:
     start = time.time()
     logger.info("db.query.start", query="search_products", query_text=query_text[:50], limit=limit)

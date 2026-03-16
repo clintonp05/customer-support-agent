@@ -1,0 +1,353 @@
+{
+  "title": "Noon Support Agent — Business Metrics",
+  "uid": "noon-support-v1",
+  "schemaVersion": 38,
+  "version": 2,
+  "refresh": "30s",
+  "time": { "from": "now-3h", "to": "now" },
+  "tags": ["noon", "support", "llm"],
+  "panels": [
+
+    {
+      "id": 1,
+      "title": "Resolution Rate (1h)",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": { "steps": [
+            { "value": 0, "color": "red" },
+            { "value": 0.7, "color": "yellow" },
+            { "value": 0.85, "color": "green" }
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "sum(increase(conversation_resolution_total{resolution_type='resolved'}[1h])) / sum(increase(conversation_resolution_total{resolution_type=~'resolved|escalated|abandoned'}[1h]))",
+        "legendFormat": "Resolution Rate"
+      }]
+    },
+
+    {
+      "id": 2,
+      "title": "First Contact Resolution (FCR, 1h)",
+      "type": "stat",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": { "steps": [
+            { "value": 0, "color": "red" },
+            { "value": 0.5, "color": "yellow" },
+            { "value": 0.7, "color": "green" }
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "sum(increase(first_contact_resolution_total{resolved='true'}[1h])) / sum(increase(first_contact_resolution_total[1h]))",
+        "legendFormat": "FCR"
+      }]
+    },
+
+    {
+      "id": 3,
+      "title": "Escalation Rate (1h)",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": { "steps": [
+            { "value": 0, "color": "green" },
+            { "value": 0.1, "color": "yellow" },
+            { "value": 0.25, "color": "red" }
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "sum(increase(conversation_resolution_total{resolution_type='escalated'}[1h])) / sum(increase(conversation_resolution_total[1h]))",
+        "legendFormat": "Escalation Rate"
+      }]
+    },
+
+    {
+      "id": 4,
+      "title": "Avg Cost per Conversation (USD)",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "thresholds": { "steps": [
+            { "value": 0, "color": "green" },
+            { "value": 0.03, "color": "yellow" },
+            { "value": 0.05, "color": "red" }
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "sum(cost_per_conversation_usd_sum) / sum(cost_per_conversation_usd_count)",
+        "legendFormat": "Avg Cost"
+      }]
+    },
+
+    {
+      "id": 5,
+      "title": "RAG Faithfulness Score (P90)",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "thresholds": { "steps": [
+            { "value": 0, "color": "red" },
+            { "value": 0.7, "color": "yellow" },
+            { "value": 0.85, "color": "green" }
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "histogram_quantile(0.9, sum by (le) (rate(rag_faithfulness_score_bucket[10m])))",
+        "legendFormat": "Faithfulness P90"
+      }]
+    },
+
+    {
+      "id": 6,
+      "title": "Error Rate — Tool Failures (1h)",
+      "type": "stat",
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": { "steps": [
+            { "value": 0, "color": "green" },
+            { "value": 0.05, "color": "yellow" },
+            { "value": 0.15, "color": "red" }
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "sum(increase(tool_calls_total{status=~'failure|error|circuit_open'}[1h])) / sum(increase(tool_calls_total{status!='not_found'}[1h]))",
+        "legendFormat": "Error Rate"
+      }]
+    },
+
+    {
+      "id": 10,
+      "title": "Conversations Resolved vs Escalated (over time)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 7 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        {
+          "expr": "increase(conversation_resolution_total{resolution_type='resolved'}[10m])",
+          "legendFormat": "Resolved"
+        },
+        {
+          "expr": "increase(conversation_resolution_total{resolution_type='escalated'}[10m])",
+          "legendFormat": "Escalated"
+        },
+        {
+          "expr": "increase(conversation_resolution_total{resolution_type='waiting_for_params'}[10m])",
+          "legendFormat": "Waiting for Params"
+        }
+      ]
+    },
+
+    {
+      "id": 11,
+      "title": "Average Turns to Resolve",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 7 },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 1 } },
+      "targets": [
+        {
+          "expr": "rate(turns_to_resolve_sum[10m]) / rate(turns_to_resolve_count[10m])",
+          "legendFormat": "Avg Turns"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(turns_to_resolve_bucket[10m]))",
+          "legendFormat": "P95 Turns"
+        }
+      ]
+    },
+
+    {
+      "id": 20,
+      "title": "Response Latency (ms)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 11, "w": 12, "h": 7 },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(response_latency_ms_bucket[10m]))",
+          "legendFormat": "P50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(response_latency_ms_bucket[10m]))",
+          "legendFormat": "P95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(response_latency_ms_bucket[10m]))",
+          "legendFormat": "P99"
+        }
+      ]
+    },
+
+    {
+      "id": 21,
+      "title": "RAG Retrieval Latency by Intent (P95, ms)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 11, "w": 12, "h": 7 },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum by (intent, le) (rate(rag_retrieval_latency_ms_bucket[10m])))",
+        "legendFormat": "{{intent}}"
+      }]
+    },
+
+    {
+      "id": 30,
+      "title": "Intent Classification Breakdown",
+      "type": "piechart",
+      "gridPos": { "x": 0, "y": 18, "w": 8, "h": 8 },
+      "targets": [{
+        "expr": "sum by (intent) (increase(intent_classifications_total[3h]))",
+        "legendFormat": "{{intent}}"
+      }]
+    },
+
+    {
+      "id": 31,
+      "title": "Resolution Rate by Intent (1h)",
+      "type": "bargauge",
+      "gridPos": { "x": 8, "y": 18, "w": 8, "h": 8 },
+      "options": { "orientation": "horizontal" },
+      "fieldConfig": { "defaults": { "unit": "percentunit" } },
+      "targets": [{
+        "expr": "sum by (intent) (increase(intent_resolution_total{resolution_type='resolved'}[1h])) / sum by (intent) (increase(intent_resolution_total[1h]))",
+        "legendFormat": "{{intent}}"
+      }]
+    },
+
+    {
+      "id": 32,
+      "title": "Escalation Reasons",
+      "type": "piechart",
+      "gridPos": { "x": 16, "y": 18, "w": 8, "h": 8 },
+      "targets": [{
+        "expr": "sum by (reason) (increase(escalation_reason_total[3h]))",
+        "legendFormat": "{{reason}}"
+      }]
+    },
+
+    {
+      "id": 40,
+      "title": "Tool Success Rate by Tool (1h)",
+      "type": "bargauge",
+      "gridPos": { "x": 0, "y": 26, "w": 12, "h": 7 },
+      "options": { "orientation": "horizontal" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": { "steps": [
+            { "value": 0, "color": "red" },
+            { "value": 0.9, "color": "yellow" },
+            { "value": 0.98, "color": "green" }
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "sum by (tool_name) (increase(tool_calls_total{status='success'}[1h])) / sum by (tool_name) (increase(tool_calls_total{status!='not_found'}[1h]))",
+        "legendFormat": "{{tool_name}}"
+      }]
+    },
+
+    {
+      "id": 41,
+      "title": "Tool Latency P95 (ms)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 26, "w": 12, "h": 7 },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum by (tool_name, le) (rate(tool_latency_ms_bucket[10m])))",
+        "legendFormat": "{{tool_name}}"
+      }]
+    },
+
+    {
+      "id": 50,
+      "title": "Multi-Intent Queries Detected",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 33, "w": 12, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [{
+        "expr": "sum by (intent_count) (increase(multi_intent_detection_total[10m]))",
+        "legendFormat": "{{intent_count}} intents"
+      }]
+    },
+
+    {
+      "id": 51,
+      "title": "LLM Token Usage (input vs output)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 33, "w": 12, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        {
+          "expr": "rate(llm_tokens_total{type='input'}[10m])",
+          "legendFormat": "Input tokens/s"
+        },
+        {
+          "expr": "rate(llm_tokens_total{type='output'}[10m])",
+          "legendFormat": "Output tokens/s"
+        }
+      ]
+    },
+
+    {
+      "id": 60,
+      "title": "RAG Faithfulness Distribution",
+      "type": "histogram",
+      "gridPos": { "x": 0, "y": 39, "w": 12, "h": 6 },
+      "targets": [{
+        "expr": "sum by (le) (increase(rag_faithfulness_score_bucket[3h]))",
+        "legendFormat": "{{le}}"
+      }]
+    },
+
+    {
+      "id": 61,
+      "title": "Circuit Breaker States",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 39, "w": 12, "h": 6 },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "CLOSED ✓", "color": "green" }, "1": { "text": "OPEN ✗", "color": "red" } } }
+          ]
+        }
+      },
+      "targets": [{
+        "expr": "circuit_breaker_state",
+        "legendFormat": "{{tool_name}}"
+      }]
+    }
+
+  ]
+}

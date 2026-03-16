@@ -4,6 +4,8 @@ from src.tools.refund_tool import RefundTool, CheckRefundEligibilityTool
 from src.tools.delivery_tool import DeliveryTool
 from src.tools.warranty_tool import WarrantyTool, InitiateClaimTool
 from src.tools.escalation_tool import EscalationTool
+from src.tools.product_tool import ProductTool
+from src.tools.customer_history_tool import CustomerHistoryTool
 from src.tools.base import BaseTool
 
 # Tool manifest: maps tool names to instances
@@ -15,6 +17,8 @@ TOOL_REGISTRY: Dict[str, BaseTool] = {
     "check_warranty": WarrantyTool(),
     "initiate_claim": InitiateClaimTool(),
     "escalate_to_human": EscalationTool(),
+    "get_product_info": ProductTool(),
+    "get_customer_history": CustomerHistoryTool(),
 }
 
 
@@ -27,7 +31,7 @@ TOOL_CHAINS = {
     "cancel_order": ["check_order"],
     "change_delivery_address": ["check_order"],
     "payment_issue": [],
-    "product_inquiry": [],
+    "product_inquiry": ["get_product_info"],
     "account_help": [],
     "general_inquiry": [],
     "speak_to_human": [],
@@ -72,6 +76,11 @@ Available Tools:
    - Description: Escalates to human agent
    - Parameters: user_id, reason
    - Returns: ticket_id, priority
+
+8. get_product_info
+   - Description: Retrieves product details by product_id or searches by query text
+   - Parameters: product_id (optional), query (optional, text search)
+   - Returns: product details or list of matching products
 """
 
 

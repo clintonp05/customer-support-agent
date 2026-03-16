@@ -1,5 +1,5 @@
 """LLM param extraction from conversation"""
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import re
 
 from src.guard.entity_extractor import extract_order_ids, extract_user_ids, extract_product_ids
@@ -8,40 +8,58 @@ from src.intent.registry import INTENT_REGISTRY
 
 async def extract_params(intent: str, messages: List[Dict[str, str]], required_params: List[str]) -> Dict[str, Any]:
     """
-    Extract parameters for an intent from conversation messages
+    Extract parameters for an intent from conversation messages.
 
-    Returns:
-        Dict of extracted parameters
+    Strategy: always prefer the CURRENT (latest) user message.  Only fall back
+    to the most-recent occurrence in conversation history when the current message
+    contains no match.  This prevents old order IDs / user IDs in prior turns
+    from overriding what the user explicitly said in their latest message.
     """
-    # Combine all user messages
-    all_text = " ".join([
+    # Current message = last user turn in the list
+    current_text = ""
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            current_text = msg.get("content", "")
+            break
+
+    # History text (all user turns) — used as fallback only
+    history_text = " ".join(
         msg.get("content", "")
         for msg in messages
         if msg.get("role") == "user"
-    ])
+    )
 
-    params = {}
+    def _first_from(text: str, extractor) -> Optional[str]:
+        found = extractor(text)
+        return found[0] if found else None
 
-    # Extract known entity types
+    def _last_from(text: str, extractor) -> Optional[str]:
+        """Return the LAST (most recent) occurrence in the concatenated history."""
+        found = extractor(text)
+        return found[-1] if found else None
+
+    params: Dict[str, Any] = {}
+
+    # Extract known entity types — current message takes priority
     if "order_id" in required_params:
-        order_ids = extract_order_ids(all_text)
-        if order_ids:
-            params["order_id"] = order_ids[0]
+        value = _first_from(current_text, extract_order_ids) or _last_from(history_text, extract_order_ids)
+        if value:
+            params["order_id"] = value
 
     if "user_id" in required_params:
-        user_ids = extract_user_ids(all_text)
-        if user_ids:
-            params["user_id"] = user_ids[0]
+        value = _first_from(current_text, extract_user_ids) or _last_from(history_text, extract_user_ids)
+        if value:
+            params["user_id"] = value
 
     if "product_id" in required_params:
-        product_ids = extract_product_ids(all_text)
-        if product_ids:
-            params["product_id"] = product_ids[0]
+        value = _first_from(current_text, extract_product_ids) or _last_from(history_text, extract_product_ids)
+        if value:
+            params["product_id"] = value
 
-    # For remaining params, try to extract from context
+    # For remaining params, try to extract from current message first, then history
     for param in required_params:
         if param not in params:
-            params[param] = _extract_generic_param(param, all_text)
+            params[param] = _extract_generic_param(param, current_text) or _extract_generic_param(param, history_text)
 
     return params
 

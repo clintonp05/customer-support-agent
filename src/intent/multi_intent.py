@@ -1,70 +1,80 @@
-"""Multi-intent detection with sentence chunking and DAG"""
+"""Multi-intent detection with sentence chunking and DAG.
+
+Splitting strategy (in order):
+  1. Sentence boundaries (. ! ?)
+  2. Coordinating conjunctions: "and", "also", "plus", "additionally"
+  3. Implicit topic-shift markers: "what about", "how about", "regarding"
+
+A segment must be >= MIN_SEGMENT_WORDS words to be kept — this filters
+fragments like "and a warranty" that appear after splitting on "and".
+"""
 from typing import List, Tuple
 import re
 
+# Minimum meaningful segment length (words)
+_MIN_SEGMENT_WORDS = 3
+
+# Patterns that signal a topic shift without a sentence boundary
+_TOPIC_SHIFT_RE = re.compile(
+    r'\s+(?:and|also|plus|additionally|,\s*and)\s+(?=\w)',
+    re.IGNORECASE,
+)
+
+# Further split on "what about X", "how about X", "regarding X"
+_SHIFT_PHRASE_RE = re.compile(
+    r'\s+(?:what about|how about|regarding|concerning)\s+',
+    re.IGNORECASE,
+)
+
 
 def split_into_intents(query: str) -> List[str]:
+    """Split a query into one or more intent segments.
+
+    Returns a list with at least one element (the original query if
+    no multi-intent signals are found or all sub-parts are too short).
+
+    Examples:
+        "what is the refund policy and warranty for electronics"
+        → ["what is the refund policy", "warranty for electronics"]
+
+        "where is my order? I also want a refund"
+        → ["where is my order", "I also want a refund"]
     """
-    Split a query into potential multiple intents
+    # 1. Split on sentence boundaries
+    sentences = re.split(r'[.!?]+', query)
+    sentences = [s.strip() for s in sentences if s.strip()]
 
-    Uses sentence boundary detection and conjunction splitting
-    """
-    # Split on sentence boundaries
-    segments = re.split(r'[.!?]+', query)
-    segments = [s.strip() for s in segments if s.strip()]
+    segments: List[str] = []
+    for sentence in sentences:
+        # 2. Split on coordinating conjunctions
+        parts = _TOPIC_SHIFT_RE.split(sentence)
+        # 3. Within each part, split on topic-shift phrases
+        refined: List[str] = []
+        for part in parts:
+            sub = _SHIFT_PHRASE_RE.split(part)
+            refined.extend(sub)
+        segments.extend([s.strip() for s in refined if s.strip()])
 
-    # Further split on conjunctions for multiple intents
-    intents = []
-    for segment in segments:
-        # Split on common conjunction patterns
-        sub_parts = re.split(r'\s+(?:and|also|plus|additionally)\s+', segment, flags=re.IGNORECASE)
-        intents.extend([s.strip() for s in sub_parts if s.strip()])
+    # Filter segments that are too short to carry a standalone intent
+    meaningful = [s for s in segments if len(s.split()) >= _MIN_SEGMENT_WORDS]
 
-    return intents
-
-
-def build_intent_dag(intents: List[str]) -> dict:
-    """
-    Build a DAG for multiple intents with dependencies
-
-    Returns:
-        Dict representing the intent execution graph
-    """
-    dag = {
-        "nodes": [],
-        "edges": [],
-        "parallel_groups": []
-    }
-
-    for i, intent in enumerate(intents):
-        dag["nodes"].append({
-            "id": f"intent_{i}",
-            "intent": intent,
-            "dependencies": []
-        })
-
-    return dag
+    # If filtering removed everything, return the full query
+    return meaningful if len(meaningful) >= 2 else [query]
 
 
 def detect_parallel_intents(query: str) -> Tuple[List[str], bool]:
+    """Return (segments, is_multi_intent).
+
+    Uses split_into_intents() and treats any result with >= 2 segments
+    as parallel multi-intent (no char_count gate — that was the bug).
     """
-    Detect if query contains multiple parallel intents
+    segments = split_into_intents(query)
+    is_parallel = len(segments) > 1
+    return segments, is_parallel
 
-    Returns:
-        Tuple of (intent_list, is_parallel)
-    """
-    # Check for parallel intent markers
-    parallel_markers = [
-        r'\s+and\s+',
-        r'\s+also\s+',
-        r'\s+plus\s+',
-        r',\s+and\s+',
-    ]
 
-    is_parallel = any(re.search(marker, query, re.IGNORECASE) for marker in parallel_markers)
-
-    if is_parallel:
-        intents = split_into_intents(query)
-        return intents, True
-
-    return [query], False
+def build_intent_dag(intents: List[str]) -> dict:
+    """Build a simple dependency-free DAG for parallel intent execution."""
+    nodes = [{"id": f"intent_{i}", "intent": intent, "dependencies": []}
+             for i, intent in enumerate(intents)]
+    return {"nodes": nodes, "edges": [], "parallel_groups": [nodes]}

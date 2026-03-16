@@ -6,6 +6,7 @@ from src.api.routes import router as api_router
 from src.constants import X_REQUEST_ID_HEADER, X_CHANNEL_ID_HEADER, MISSING_HEADERS_ERROR
 from src.observability.logger import setup_logging, bind_request_context, get_logger
 from src.observability.infra_health import run_health_checks_async
+from src.observability.metrics_exporter import record_circuit_breaker_state
 from src.db.connector import init_db_pool, close_db_pool
 from src.rag.retriever import get_retriever
 
@@ -66,6 +67,13 @@ async def startup():
         logger.info("startup.rag_initialized", msg="RAG retriever and embedder initialized")
     except Exception as exc:
         logger.exception("startup.rag_init_failed", exc=str(exc))
+    # Initialise circuit breaker gauges to CLOSED (0) for every known tool so
+    # the Grafana panel shows green from the start instead of "No data".
+    for _tool in ["check_order", "check_refund_eligibility", "initiate_refund",
+                  "track_delivery", "check_warranty", "initiate_claim",
+                  "escalate_to_human", "get_product_info"]:
+        record_circuit_breaker_state(_tool, False)
+
     try:
         await run_health_checks_async()
     except Exception as exc:

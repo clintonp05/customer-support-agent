@@ -1,0 +1,47 @@
+[
+  {
+    "id": "rw-001",
+    "description": "Refund request - eligible order",
+    "conversation": [
+      {"role": "user", "content": "I want a refund for order N-20260314-ABCDE"}
+    ],
+    "expected_intent": "refund_request",
+    "expected_tools": ["check_order", "check_refund_eligibility"],
+    "expected_output_contains": ["refund"],
+    "region": "UAE"
+  },
+  {
+    "id": "rw-002",
+    "description": "Warranty claim for electronics",
+    "conversation": [
+      {"role": "user", "content": "My product is defective, I need a warranty claim for order N-20260314-ABCDE"}
+    ],
+    "expected_intent": "warranty_claim",
+    "expected_tools": ["check_warranty"],
+    "expected_output_contains": ["warranty"],
+    "region": "UAE"
+  },
+  {
+    "id": "rw-003",
+    "description": "Refund policy general inquiry - should hit RAG",
+    "conversation": [
+      {"role": "user", "content": "what is the refund policy for electronics?"}
+    ],
+    "expected_intent": "general_inquiry",
+    "expected_rag": true,
+    "expected_output_contains": ["refund", "day"],
+    "faithfulness_required": true,
+    "region": "UAE"
+  },
+  {
+    "id": "rw-004",
+    "description": "KSA region refund policy",
+    "conversation": [
+      {"role": "user", "content": "what is noon's return policy in Saudi Arabia?"}
+    ],
+    "expected_intent": "general_inquiry",
+    "expected_rag": true,
+    "expected_output_contains": ["return"],
+    "region": "KSA"
+  }
+]

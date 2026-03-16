@@ -11,6 +11,22 @@ def merge_dicts(left: Optional[Dict[str, Any]], right: Optional[Dict[str, Any]])
     return merged
 
 
+def union_list(left: Optional[List[str]], right: Optional[List[str]]) -> List[str]:
+    """Merge two intent lists, deduplicating while preserving order."""
+    seen: set = set()
+    result: List[str] = []
+    for item in (left or []) + (right or []):
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def last_non_empty(left: str, right: str) -> str:
+    """Keep the most recently written non-empty value."""
+    return right if right else left
+
+
 class ConversationState(TypedDict):
     # Identity
     conversation_id: str
@@ -23,8 +39,8 @@ class ConversationState(TypedDict):
 
     # Intent layer
     raw_query: str
-    detected_intents: List[str]  # multi-intent list
-    primary_intent: str
+    detected_intents: Annotated[List[str], union_list]  # parallel-safe union
+    primary_intent: Annotated[str, last_non_empty]  # parallel-safe last-write
     intent_confidence: float
     intent_support_status: str  # SUPPORTED / IN_DOMAIN_OUT_OF_SCOPE / UNSUPPORTED
     query_analysis: Annotated[Dict[str, Any], merge_dicts]
@@ -53,6 +69,18 @@ class ConversationState(TypedDict):
 
     # Response
     final_response: Optional[str]
+
+    # Emotion & signal detection (populated by guard_input_node)
+    emotion: Optional[Dict[str, Any]]  # tone, churn_signal, repeat_complaint, delivery_dispute, escalation_weight
+
+    # Customer history (populated by execute_tools_node in parallel)
+    customer_history: Optional[Dict[str, Any]]  # past_issues, churn_risk, recommended_action
+
+    # Escalation packet (populated by escalate_node for human agents)
+    escalation_packet: Optional[Dict[str, Any]]  # full context: order, delivery, history, assessment
+
+    # UI progress messages pushed to token_queue before LLM call
+    progress_messages: Optional[list]  # e.g. ["Checking order details...", "Verifying delivery status..."]
 
     # Observability
     trace_id: str
